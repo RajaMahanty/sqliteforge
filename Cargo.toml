@@ -1,0 +1,29 @@
+[package]
+name = "sqliteforge"
+version = "1.0.0"
+edition = "2021"
+description = "A modern terminal-first SQLite client"
+license = "MIT"
+
+[[bin]]
+name = "sqliteforge"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+crossterm = "0.28"
+ratatui = "0.29"
+reedline = "0.38"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+unicode-width = "0.2"
+regex = "1"
+nu-ansi-term = "0.50"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
