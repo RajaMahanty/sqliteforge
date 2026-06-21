@@ -3,7 +3,7 @@ pub mod highlighter;
 pub mod prompt;
 
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, Emacs, KeyCode, KeyModifiers,
+    default_emacs_keybindings, ColumnarMenu, Emacs, EditCommand, KeyCode, KeyModifiers,
     MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
 };
 
@@ -32,12 +32,12 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
         None
     };
 
-    // Set up completer with schema info
-    let mut completer = SqlCompleter::new();
+    // Set up completer with schema info and config
+    let mut completer = SqlCompleter::with_config(&config.completion);
     refresh_completer(&db, &mut completer);
 
-    // Set up explorer
-    let mut explorer = Explorer::new();
+    // Set up explorer with config
+    let mut explorer = Explorer::with_config(&config.explorer);
     explorer.refresh(&db);
 
     // Output file redirection
@@ -80,18 +80,151 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
         ReedlineEvent::ExecuteHostCommand("__explorer_toggle__".to_string()),
     );
 
+    // ── Smart Enter: intercept Enter via host command for auto-indent ────
+    let auto_indent = config.keybindings.auto_indent;
+    if auto_indent {
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Enter,
+            ReedlineEvent::ExecuteHostCommand("__smart_enter__".to_string()),
+        );
+    }
+
+    // ── Auto-close brackets ─────────────────────────────────────────────
+    if config.keybindings.auto_pairs {
+        // Open brackets auto-close and move left
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('('),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("()".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('['),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("[]".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('{'),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("{}".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+
+        // Closing characters skip or insert
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char(')'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_paren__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char(']'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_bracket__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('}'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_brace__".to_string()),
+        );
+
+        // Quotes skip or auto-close
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('\''),
+            ReedlineEvent::ExecuteHostCommand("__char_quote__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('"'),
+            ReedlineEvent::ExecuteHostCommand("__char_double_quote__".to_string()),
+        );
+    }
+
+    // ── Shift+Arrow keybindings for text selection ───────────────────────
+    if config.keybindings.shift_select {
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveLeft { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveRight { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Up,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Down,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineEnd { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Home,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::End,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineEnd { select: true }]),
+        );
+    }
+
+    // ── Ctrl+Arrow for word-level navigation ────────────────────────────
+    if config.keybindings.word_jump {
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordLeft { select: false }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordRight { select: false }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordLeft { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordRight { select: true }]),
+        );
+    }
+
+    // Ctrl+A: move to beginning of line
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('a'),
+        ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: false }]),
+    );
+
     let edit_mode = Box::new(Emacs::new(keybindings));
 
     // Build completion menu
     let completion_menu = Box::new(
         ColumnarMenu::default()
             .with_name("completion_menu")
-            .with_columns(4)
-            .with_column_padding(2)
+            .with_columns(config.completion.menu_columns)
+            .with_column_padding(config.completion.menu_padding)
             .with_marker(""),
     );
 
-    // Build reedline
+    // Build reedline with validator for multi-line support
     let mut line_editor = Reedline::create()
         .with_completer(Box::new(completer))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
@@ -105,8 +238,6 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
     // Load existing history into reedline
     if let Some(ref hist) = history {
         for entry in hist.all_entries() {
-            // We can't directly add to reedline's history without its own History trait,
-            // but we store it separately
             let _ = entry;
         }
     }
@@ -115,10 +246,138 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
     print_banner(&db.path);
 
     // Main loop
+    let mut should_exit = false;
+
     loop {
+        if should_exit {
+            break;
+        }
+
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(input)) => {
                 let trimmed = input.trim();
+
+                // ── Smart Enter: buffer is preserved via suspension ─────
+                if trimmed == "__smart_enter__" {
+                    let buffer = line_editor.current_buffer_contents().to_string();
+                    let buffer_trimmed = buffer.trim();
+
+                    // Empty buffer → clear and continue
+                    if buffer_trimmed.is_empty() {
+                        line_editor.run_edit_commands(&[EditCommand::Clear]);
+                        continue;
+                    }
+
+                    // Dot commands are single-line → submit immediately
+                    if buffer_trimmed.starts_with('.') {
+                        let sql = buffer_trimmed.to_string();
+                        line_editor.run_edit_commands(&[EditCommand::Clear]);
+
+                        if let Some(ref hist) = history {
+                            let _ = hist.add(&sql);
+                        }
+
+                        process_dot_command(
+                            &sql, &db, &mut config, &mut output_file,
+                            &mut line_editor, &mut explorer, &mut should_exit,
+                        );
+                        continue;
+                    }
+
+                    // SQL ending with ';' → submit
+                    if buffer_trimmed.ends_with(';') {
+                        let sql = buffer_trimmed.to_string();
+                        line_editor.run_edit_commands(&[EditCommand::Clear]);
+
+                        if let Some(ref hist) = history {
+                            let _ = hist.add(&sql);
+                        }
+
+                        execute_sql(
+                            &sql, &db, &config, &output_file,
+                            &mut line_editor, &mut explorer,
+                        );
+                        continue;
+                    }
+
+                    // Smart Enter inside brackets: if cursor is inside (), [], or {}
+                    let pos = line_editor.current_insertion_point();
+                    let is_bracket_pair = if pos > 0 && pos < buffer.len() {
+                        let bytes = buffer.as_bytes();
+                        let left = bytes[pos - 1];
+                        let right = bytes[pos];
+                        (left == b'(' && right == b')')
+                            || (left == b'[' && right == b']')
+                            || (left == b'{' && right == b'}')
+                    } else {
+                        false
+                    };
+
+                    if is_bracket_pair {
+                        let indent = validator::calculate_indent(&buffer[..pos]);
+                        let outer_indent = indent.saturating_sub(4);
+                        let insert_str = format!("\n{}\n{}", " ".repeat(indent), " ".repeat(outer_indent));
+
+                        let mut cmds = vec![
+                            EditCommand::InsertString(insert_str),
+                        ];
+                        // Move left to place the cursor on the indented middle line
+                        let move_left = 1 + outer_indent;
+                        for _ in 0..move_left {
+                            cmds.push(EditCommand::MoveLeft { select: false });
+                        }
+                        line_editor.run_edit_commands(&cmds);
+                        continue;
+                    }
+
+                    // Incomplete SQL → insert newline + smart indentation
+                    let indent_spaces = validator::calculate_indent(&buffer);
+
+                    let mut cmds = vec![
+                        EditCommand::MoveToEnd { select: false },
+                        EditCommand::InsertNewline,
+                    ];
+                    if indent_spaces > 0 {
+                        cmds.push(EditCommand::InsertString(
+                            " ".repeat(indent_spaces),
+                        ));
+                    }
+                    line_editor.run_edit_commands(&cmds);
+                    continue;
+                }
+
+                // ── Auto-close / Skip handlers ──────────────────────────
+                if trimmed == "__char_close_paren__" {
+                    handle_skip_or_insert_char(&mut line_editor, ')');
+                    continue;
+                }
+                if trimmed == "__char_close_bracket__" {
+                    handle_skip_or_insert_char(&mut line_editor, ']');
+                    continue;
+                }
+                if trimmed == "__char_close_brace__" {
+                    handle_skip_or_insert_char(&mut line_editor, '}');
+                    continue;
+                }
+                if trimmed == "__char_quote__" {
+                    handle_quote_char(&mut line_editor, '\'');
+                    continue;
+                }
+                if trimmed == "__char_double_quote__" {
+                    handle_quote_char(&mut line_editor, '"');
+                    continue;
+                }
+
+                // ── Explorer toggle ─────────────────────────────────────
+                if trimmed == "__explorer_toggle__" {
+                    explorer.toggle();
+                    if explorer.visible {
+                        println!("{}", explorer.render());
+                    }
+                    continue;
+                }
+
+                // ── Normal flow (auto_indent disabled, validator handles multiline)
                 if trimmed.is_empty() {
                     continue;
                 }
@@ -128,95 +387,22 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
                     let _ = hist.add(trimmed);
                 }
 
-                // Handle Ctrl+E explorer toggle (sent via ExecuteHostCommand)
-                if trimmed == "__explorer_toggle__" {
-                    explorer.toggle();
-                    if explorer.visible {
-                        println!("{}", explorer.render());
-                    }
-                    continue;
-                }
-
                 // Dot commands
                 if trimmed.starts_with('.') {
-                    match commands::execute_dot_command(trimmed, &db, &config) {
-                        DotCommandResult::Output(text) => {
-                            output_text(&text, &output_file);
-                        }
-                        DotCommandResult::Handled => {}
-                        DotCommandResult::Exit => {
-                            println!("Goodbye!");
-                            break;
-                        }
-                        DotCommandResult::Error(e) => {
-                            eprintln!("\x1b[31mError: {}\x1b[0m", e);
-                        }
-                        DotCommandResult::ModeChanged(mode) => {
-                            config.mode = mode.clone();
-                            println!("Output mode changed to: {}", mode);
-                        }
-                        DotCommandResult::HeadersChanged(h) => {
-                            config.headers = h;
-                            println!(
-                                "Headers {}",
-                                if h { "enabled" } else { "disabled" }
-                            );
-                        }
-                        DotCommandResult::NullvalueChanged(nv) => {
-                            config.nullvalue = nv.clone();
-                            db.nullvalue = nv.clone();
-                            println!("Nullvalue set to: \"{}\"", nv);
-                        }
-                        DotCommandResult::OutputChanged(file) => {
-                            match &file {
-                                Some(f) => println!("Output redirected to: {}", f),
-                                None => println!("Output restored to stdout"),
-                            }
-                            output_file = file;
-                        }
-                    }
-
-                    // Refresh completer after schema-modifying commands
-                    if trimmed.starts_with(".read") {
-                        let mut new_completer = SqlCompleter::new();
-                        refresh_completer(&db, &mut new_completer);
-                        line_editor = line_editor.with_completer(Box::new(new_completer));
-                        explorer.refresh(&db);
-                    }
-
+                    process_dot_command(
+                        trimmed, &db, &mut config, &mut output_file,
+                        &mut line_editor, &mut explorer, &mut should_exit,
+                    );
                     continue;
                 }
 
                 // SQL execution
-                match db.execute_query(trimmed) {
-                    Ok(result) => {
-                        let output = Renderer::render(
-                            &result,
-                            &config.mode,
-                            config.headers,
-                            &config.nullvalue,
-                        );
-                        output_text(&output, &output_file);
-
-                        // Refresh completer after DDL statements
-                        let upper = trimmed.to_uppercase();
-                        if upper.starts_with("CREATE")
-                            || upper.starts_with("DROP")
-                            || upper.starts_with("ALTER")
-                        {
-                            let mut new_completer = SqlCompleter::new();
-                            refresh_completer(&db, &mut new_completer);
-                            line_editor = line_editor.with_completer(Box::new(new_completer));
-                            explorer.refresh(&db);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("\x1b[31mError: {}\x1b[0m", e);
-                    }
-                }
+                execute_sql(
+                    trimmed, &db, &config, &output_file,
+                    &mut line_editor, &mut explorer,
+                );
             }
             Ok(Signal::CtrlC) => {
-                // Cancel current input
                 continue;
             }
             Ok(Signal::CtrlD) => {
@@ -233,13 +419,103 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Process a dot command
+fn process_dot_command(
+    cmd: &str,
+    db: &Database,
+    config: &mut Config,
+    output_file: &mut Option<String>,
+    line_editor: &mut Reedline,
+    explorer: &mut Explorer,
+    should_exit: &mut bool,
+) {
+    match commands::execute_dot_command(cmd, db, config) {
+        DotCommandResult::Output(text) => {
+            output_text(&text, output_file);
+        }
+        DotCommandResult::Handled => {}
+        DotCommandResult::Exit => {
+            println!("Goodbye!");
+            *should_exit = true;
+        }
+        DotCommandResult::Error(e) => {
+            eprintln!("\x1b[31mError: {}\x1b[0m", e);
+        }
+        DotCommandResult::ModeChanged(mode) => {
+            config.mode = mode.clone();
+            println!("Output mode changed to: {}", mode);
+        }
+        DotCommandResult::HeadersChanged(h) => {
+            config.headers = h;
+            println!("Headers {}", if h { "enabled" } else { "disabled" });
+        }
+        DotCommandResult::NullvalueChanged(nv) => {
+            config.nullvalue = nv.clone();
+            println!("Nullvalue set to: \"{}\"", nv);
+        }
+        DotCommandResult::OutputChanged(file) => {
+            match &file {
+                Some(f) => println!("Output redirected to: {}", f),
+                None => println!("Output restored to stdout"),
+            }
+            *output_file = file;
+        }
+    }
+
+    // Refresh completer after schema-modifying commands
+    if cmd.starts_with(".read") {
+        let mut new_completer = SqlCompleter::with_config(&config.completion);
+        refresh_completer(db, &mut new_completer);
+        *line_editor = std::mem::replace(line_editor, Reedline::create())
+            .with_completer(Box::new(new_completer));
+        explorer.refresh(db);
+    }
+}
+
+/// Execute a SQL statement and handle results
+fn execute_sql(
+    sql: &str,
+    db: &Database,
+    config: &Config,
+    output_file: &Option<String>,
+    line_editor: &mut Reedline,
+    explorer: &mut Explorer,
+) {
+    match db.execute_query(sql) {
+        Ok(result) => {
+            let output = Renderer::render(
+                &result,
+                &config.mode,
+                config.headers,
+                &config.nullvalue,
+            );
+            output_text(&output, output_file);
+
+            // Refresh completer after DDL statements
+            let upper = sql.to_uppercase();
+            if upper.starts_with("CREATE")
+                || upper.starts_with("DROP")
+                || upper.starts_with("ALTER")
+            {
+                let mut new_completer = SqlCompleter::with_config(&config.completion);
+                refresh_completer(db, &mut new_completer);
+                *line_editor = std::mem::replace(line_editor, Reedline::create())
+                    .with_completer(Box::new(new_completer));
+                explorer.refresh(db);
+            }
+        }
+        Err(e) => {
+            eprintln!("\x1b[31mError: {}\x1b[0m", e);
+        }
+    }
+}
+
 /// Refresh the completer with current schema
 fn refresh_completer(db: &Database, completer: &mut SqlCompleter) {
     let tables = db.get_tables();
     let views = db.get_views();
     let indices = db.get_indices();
 
-    // Gather columns per table and all columns
     let mut all_columns = Vec::new();
     let mut table_columns = HashMap::new();
     for table in &tables {
@@ -284,8 +560,44 @@ fn print_banner(db_path: &str) {
         "  \x1b[37m\x1b[1mv1.0\x1b[0m  \x1b[90m─  A modern terminal-first SQLite client\x1b[0m"
     );
     println!("  \x1b[90mConnected to: \x1b[33m{}\x1b[0m", db_path);
-    println!(
-        "  \x1b[90mType \x1b[36m.help\x1b[90m for commands, \x1b[36mCtrl+D\x1b[90m to exit\x1b[0m"
-    );
+    println!("  \x1b[90mType \x1b[36m.help\x1b[90m for commands, \x1b[36mCtrl+D\x1b[90m to exit\x1b[0m");
     println!();
 }
+
+/// Helper to either skip over a character if it already matches the cursor's target,
+/// or insert it normally.
+fn handle_skip_or_insert_char(line_editor: &mut Reedline, c: char) {
+    let buffer = line_editor.current_buffer_contents().to_string();
+    let pos = line_editor.current_insertion_point();
+    let has_char = if pos < buffer.len() {
+        buffer.as_bytes()[pos] == c as u8
+    } else {
+        false
+    };
+    if has_char {
+        line_editor.run_edit_commands(&[EditCommand::MoveRight { select: false }]);
+    } else {
+        line_editor.run_edit_commands(&[EditCommand::InsertChar(c)]);
+    }
+}
+
+/// Helper to handle quotes: skip if matched, otherwise insert pair and move left.
+fn handle_quote_char(line_editor: &mut Reedline, q: char) {
+    let buffer = line_editor.current_buffer_contents().to_string();
+    let pos = line_editor.current_insertion_point();
+    let has_char = if pos < buffer.len() {
+        buffer.as_bytes()[pos] == q as u8
+    } else {
+        false
+    };
+    if has_char {
+        line_editor.run_edit_commands(&[EditCommand::MoveRight { select: false }]);
+    } else {
+        let pair = format!("{}{}", q, q);
+        line_editor.run_edit_commands(&[
+            EditCommand::InsertString(pair),
+            EditCommand::MoveLeft { select: false },
+        ]);
+    }
+}
+

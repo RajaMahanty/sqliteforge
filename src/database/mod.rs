@@ -184,6 +184,34 @@ impl Database {
             .unwrap_or_default()
     }
 
+    /// Get columns with their types for a table (name, type)
+    pub fn get_column_info(&self, table: &str) -> Vec<(String, String)> {
+        let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
+        self.conn
+            .prepare(&sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| {
+                    let name: String = row.get(1)?;
+                    let col_type: String = row.get(2)?;
+                    Ok((name, col_type))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get the row count for a table
+    pub fn get_row_count(&self, table: &str) -> Option<usize> {
+        let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
+        self.conn
+            .query_row(&sql, [], |row| row.get::<_, i64>(0))
+            .ok()
+            .map(|c| c as usize)
+    }
+
     /// Get the CREATE statement for a database object
     pub fn get_schema(&self, name: &str) -> Option<String> {
         let sql = "SELECT sql FROM sqlite_master WHERE name = ?1";

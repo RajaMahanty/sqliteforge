@@ -172,7 +172,9 @@ pub fn execute_dot_command(
 }
 
 fn help_text() -> String {
-    r#"SQLiteForge v1.0 - Available Commands:
+    let config_path = crate::config::Config::config_path();
+    format!(
+        r#"SQLiteForge v1.0 - Available Commands:
 
   .help                   Show this help message
   .quit / .exit           Exit SQLiteForge
@@ -189,12 +191,22 @@ fn help_text() -> String {
   .preview TABLE          Preview first 20 rows of a table
 
   Keyboard Shortcuts:
-    Tab             Autocomplete
-    Up/Down Arrow   Navigate history
-    Ctrl+R          Reverse search
-    Ctrl+E          Toggle database explorer
-    Ctrl+L          Clear screen
-    Ctrl+C          Cancel input
-    Ctrl+D          Exit"#
-        .to_string()
+    Tab                 Autocomplete
+    Shift+Tab           Previous suggestion
+    Up/Down Arrow       Navigate history
+    Shift+Left/Right    Select text
+    Shift+Up/Down       Select to line start/end
+    Ctrl+Left/Right     Jump by word
+    Ctrl+Shift+L/R      Select by word
+    Ctrl+R              Reverse search history
+    Ctrl+E              Toggle database explorer
+    Ctrl+A              Move to line start
+    Ctrl+L              Clear screen
+    Ctrl+C              Cancel input
+    Ctrl+D              Exit
+
+  Config: {}"#,
+        config_path.display()
+    )
 }
+

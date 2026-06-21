@@ -1,6 +1,8 @@
 use reedline::{Completer, Span, Suggestion};
 use std::collections::HashMap;
 
+use crate::config::CompletionConfig;
+
 /// SQL and dot-command autocompletion engine
 pub struct SqlCompleter {
     /// Dot commands
@@ -15,6 +17,8 @@ pub struct SqlCompleter {
     table_columns: HashMap<String, Vec<String>>,
     /// Index names
     indices: Vec<String>,
+    /// Completion configuration
+    config: CompletionConfig,
 }
 
 // ── Keyword categories ──────────────────────────────────────────────────────
@@ -65,6 +69,27 @@ const DDL_KEYWORDS: &[&str] = &[
     "EXCLUSIVE", "WITHOUT",
 ];
 
+/// Column constraint keywords (inside CREATE TABLE parentheses)
+const COLUMN_DEF_KEYWORDS: &[&str] = &[
+    "PRIMARY", "KEY", "NOT", "NULL", "UNIQUE", "CHECK", "DEFAULT",
+    "AUTOINCREMENT", "REFERENCES", "COLLATE", "CONSTRAINT",
+    "FOREIGN", "ON", "DELETE", "UPDATE", "CASCADE", "RESTRICT",
+    "SET", "NO", "ACTION", "ABORT", "FAIL", "IGNORE", "REPLACE",
+    "DEFERRABLE", "INITIALLY", "DEFERRED", "IMMEDIATE",
+    "GENERATED", "ALWAYS", "AS", "STORED", "VIRTUAL",
+    // Data types
+    "INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "BOOLEAN",
+    "VARCHAR", "CHAR", "INT", "BIGINT", "SMALLINT", "TINYINT",
+    "FLOAT", "DOUBLE", "DECIMAL", "DATE", "DATETIME", "TIMESTAMP",
+];
+
+/// INSERT-specific keywords
+const INSERT_KEYWORDS: &[&str] = &[
+    "INTO", "VALUES", "DEFAULT", "SELECT", "OR", "REPLACE", "ABORT",
+    "FAIL", "IGNORE", "ROLLBACK", "ON", "CONFLICT", "DO", "NOTHING",
+    "UPDATE", "SET", "WHERE", "RETURNING",
+];
+
 /// Which keyword set to use
 #[derive(Clone, Copy)]
 enum KeywordScope {
@@ -76,6 +101,10 @@ enum KeywordScope {
     General,
     /// After CREATE/ALTER/DROP — DDL keywords
     Ddl,
+    /// Inside column definitions (CREATE TABLE body)
+    ColumnDef,
+    /// After INSERT
+    Insert,
     /// No keywords (e.g. directly after FROM/JOIN)
     None,
 }
@@ -86,6 +115,8 @@ struct CompletionContext {
     allow_tables: bool,
     allow_columns: bool,
     allow_indices: bool,
+    /// Allow suggestions even when the current word is empty
+    eager: bool,
 }
 
 impl SqlCompleter {
@@ -97,6 +128,19 @@ impl SqlCompleter {
             all_columns: Vec::new(),
             table_columns: HashMap::new(),
             indices: Vec::new(),
+            config: CompletionConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: &CompletionConfig) -> Self {
+        Self {
+            dot_commands: Self::dot_command_list(),
+            tables: Vec::new(),
+            views: Vec::new(),
+            all_columns: Vec::new(),
+            table_columns: HashMap::new(),
+            indices: Vec::new(),
+            config: config.clone(),
         }
     }
 
@@ -132,6 +176,8 @@ impl SqlCompleter {
             KeywordScope::Expression => EXPR_KEYWORDS.to_vec(),
             KeywordScope::Clause => CLAUSE_KEYWORDS.to_vec(),
             KeywordScope::Ddl => DDL_KEYWORDS.to_vec(),
+            KeywordScope::ColumnDef => COLUMN_DEF_KEYWORDS.to_vec(),
+            KeywordScope::Insert => INSERT_KEYWORDS.to_vec(),
             KeywordScope::General => {
                 let mut all = Vec::new();
                 all.extend_from_slice(STMT_KEYWORDS);
@@ -201,11 +247,16 @@ impl SqlCompleter {
         _has_leading_quote: bool,
     ) -> Vec<Suggestion> {
         let lower_prefix = col_prefix.to_lowercase();
+        let quote = self.config.quote_identifiers;
         columns
             .iter()
             .filter(|col| col_prefix.is_empty() || col.to_lowercase().starts_with(&lower_prefix))
             .map(|col| Suggestion {
-                value: format!("\"{}\"", col),
+                value: if quote {
+                    format!("\"{}\"", col)
+                } else {
+                    col.clone()
+                },
                 description: Some("column".to_string()),
                 style: None,
                 extra: None,
@@ -215,28 +266,103 @@ impl SqlCompleter {
             .collect()
     }
 
+    /// Check if we are inside CREATE TABLE parentheses
+    fn is_inside_create_table_body(line_to_cursor: &str) -> bool {
+        let upper = line_to_cursor.to_uppercase();
+        // Find the last CREATE TABLE, then check if we have an unmatched open paren
+        if let Some(ct_pos) = upper.rfind("CREATE TABLE") {
+            let after_ct = &line_to_cursor[ct_pos..];
+            let open_parens = after_ct.matches('(').count();
+            let close_parens = after_ct.matches(')').count();
+            return open_parens > close_parens;
+        }
+        // Also handle CREATE TEMP TABLE, CREATE TEMPORARY TABLE
+        if let Some(ct_pos) = upper.rfind("CREATE TEMP TABLE")
+            .or_else(|| upper.rfind("CREATE TEMPORARY TABLE"))
+        {
+            let after_ct = &line_to_cursor[ct_pos..];
+            let open_parens = after_ct.matches('(').count();
+            let close_parens = after_ct.matches(')').count();
+            return open_parens > close_parens;
+        }
+        false
+    }
+
     /// Detect the SQL context by looking at the keyword preceding the cursor
     fn detect_context(line_to_cursor: &str, word_start: usize) -> CompletionContext {
+        // Inside CREATE TABLE body: suggest column definition keywords / data types
+        if Self::is_inside_create_table_body(line_to_cursor) {
+            return CompletionContext {
+                keyword_scope: KeywordScope::ColumnDef,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            };
+        }
+
         let before = line_to_cursor[..word_start].trim_end();
         let before = before.strip_suffix(',').unwrap_or(before).trim_end();
         let prev_keyword = Self::find_prev_keyword(before);
 
         match prev_keyword.as_deref() {
             // After FROM/JOIN variants: only tables and views
-            Some("FROM") | Some("JOIN") | Some("INTO") | Some("TABLE") | Some("UPDATE") => {
+            Some("FROM") | Some("JOIN") => {
                 CompletionContext {
                     keyword_scope: KeywordScope::None,
                     allow_tables: true,
                     allow_columns: false,
                     allow_indices: false,
+                    eager: true,
                 }
             }
+            // After INTO: tables (for INSERT INTO)
+            Some("INTO") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After TABLE: tables (for DROP TABLE, ALTER TABLE) + DDL keywords
+            Some("TABLE") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After UPDATE: tables
+            Some("UPDATE") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After DELETE: suggest FROM
+            Some("DELETE") => CompletionContext {
+                keyword_scope: KeywordScope::Clause,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After INSERT: suggest INTO, OR
+            Some("INSERT") => CompletionContext {
+                keyword_scope: KeywordScope::Insert,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
             // After SELECT: expression keywords + columns + tables
             Some("SELECT") | Some("HAVING") => CompletionContext {
                 keyword_scope: KeywordScope::Expression,
                 allow_tables: true,
                 allow_columns: true,
                 allow_indices: false,
+                eager: true,
             },
             // After WHERE/ON/AND/OR/operators: expression keywords + columns
             Some("WHERE") | Some("ON") | Some("SET") | Some("AND") | Some("OR")
@@ -246,6 +372,7 @@ impl SqlCompleter {
                 allow_tables: true,
                 allow_columns: true,
                 allow_indices: false,
+                eager: true,
             },
             // After CREATE/ALTER/DROP: DDL keywords
             Some("CREATE") | Some("ALTER") | Some("DROP") => CompletionContext {
@@ -253,20 +380,39 @@ impl SqlCompleter {
                 allow_tables: false,
                 allow_columns: false,
                 allow_indices: false,
+                eager: true,
             },
-            // After INDEX: indices
+            // After INDEX: indices or tables (for CREATE INDEX ... ON <table>)
             Some("INDEX") => CompletionContext {
                 keyword_scope: KeywordScope::None,
                 allow_tables: false,
                 allow_columns: false,
                 allow_indices: true,
+                eager: true,
             },
-            // After ORDER/GROUP: suggest BY
+            // After ORDER/GROUP: suggest BY, then columns
             Some("ORDER") | Some("GROUP") => CompletionContext {
                 keyword_scope: KeywordScope::Expression,
                 allow_tables: false,
                 allow_columns: true,
                 allow_indices: false,
+                eager: true,
+            },
+            // After BY: columns (ORDER BY x, GROUP BY x)
+            Some("BY") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: true,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After LIMIT/OFFSET: expression keywords + columns
+            Some("LIMIT") | Some("OFFSET") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: false,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
             },
             // After join modifiers: suggest JOIN + tables
             Some("INNER") | Some("LEFT") | Some("RIGHT") | Some("CROSS")
@@ -275,13 +421,87 @@ impl SqlCompleter {
                 allow_tables: true,
                 allow_columns: false,
                 allow_indices: false,
+                eager: true,
             },
+            // After AS: no suggestions (user defines alias)
+            Some("AS") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            },
+            // After PRAGMA: no tables/columns, just let user type
+            Some("PRAGMA") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            },
+            // After IF: suggest EXISTS/NOT (for CREATE TABLE IF NOT EXISTS)
+            Some("IF") => CompletionContext {
+                keyword_scope: KeywordScope::Ddl,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After EXISTS/NOT: suggest table names (CREATE TABLE IF NOT EXISTS <name>)
+            Some("EXISTS") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After ADD: suggest COLUMN (ALTER TABLE x ADD COLUMN)
+            Some("ADD") => CompletionContext {
+                keyword_scope: KeywordScope::ColumnDef,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After RENAME: suggest TO, COLUMN
+            Some("RENAME") => CompletionContext {
+                keyword_scope: KeywordScope::Ddl,
+                allow_tables: false,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // No previous keyword: at start of statement
+            None => {
+                // Check if the line is truly empty or at start
+                let all_before = line_to_cursor[..word_start].trim();
+                if all_before.is_empty() {
+                    // Beginning of a new statement
+                    CompletionContext {
+                        keyword_scope: KeywordScope::General,
+                        allow_tables: false,
+                        allow_columns: false,
+                        allow_indices: false,
+                        eager: false,
+                    }
+                } else {
+                    // After a non-keyword token (table name, column, etc.) — clause transitions
+                    CompletionContext {
+                        keyword_scope: KeywordScope::Clause,
+                        allow_tables: true,
+                        allow_columns: true,
+                        allow_indices: false,
+                        eager: false,
+                    }
+                }
+            }
             // Default: general (statement starters + clause + expression)
             _ => CompletionContext {
                 keyword_scope: KeywordScope::Clause,
                 allow_tables: true,
                 allow_columns: true,
                 allow_indices: false,
+                eager: false,
             },
         }
     }
@@ -331,7 +551,8 @@ impl SqlCompleter {
             "NATURAL", "OUTER", "FULL", "ON", "INTO", "TABLE", "UPDATE", "SET",
             "HAVING", "BY", "INDEX", "AND", "OR", "BETWEEN", "CASE", "WHEN",
             "THEN", "ELSE", "LIKE", "ORDER", "GROUP", "DELETE", "INSERT",
-            "VALUES", "CREATE", "ALTER", "DROP", "IN",
+            "VALUES", "CREATE", "ALTER", "DROP", "IN", "AS", "PRAGMA",
+            "LIMIT", "OFFSET", "IF", "EXISTS", "NOT", "ADD", "RENAME",
         ];
 
         if context_keywords.contains(&upper.as_str()) {
@@ -344,6 +565,10 @@ impl SqlCompleter {
 
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        if !self.config.enabled {
+            return Vec::new();
+        }
+
         let line_to_cursor = &line[..pos];
 
         // Dot command completion
@@ -368,7 +593,7 @@ impl Completer for SqlCompleter {
         // Try table-qualified column completion first: "table"."col" or alias.col
         if let Some(suggestions) = self.try_qualified_completion(line_to_cursor, pos) {
             if !suggestions.is_empty() {
-                return suggestions;
+                return self.cap_suggestions(suggestions);
             }
         }
 
@@ -379,9 +604,6 @@ impl Completer for SqlCompleter {
             .unwrap_or(0);
 
         let raw_word = &line_to_cursor[word_start..];
-        if raw_word.is_empty() {
-            return Vec::new();
-        }
 
         // Check if the word starts with a double quote
         let (has_leading_quote, current_word, span_start) = if raw_word.starts_with('"') {
@@ -390,22 +612,25 @@ impl Completer for SqlCompleter {
             (false, raw_word, word_start)
         };
 
-        if current_word.is_empty() && !has_leading_quote {
-            return Vec::new();
-        }
-
         // Determine SQL context
         let context = Self::detect_context(line_to_cursor, word_start);
+
+        // If the word is empty and context is not eager, don't show suggestions
+        // (unless we're in an eager context like after FROM, SELECT, etc.)
+        if current_word.is_empty() && !has_leading_quote && !context.eager {
+            return Vec::new();
+        }
 
         let upper_word = current_word.to_uppercase();
         let lower_word = current_word.to_lowercase();
         let mut suggestions = Vec::new();
+        let quote = self.config.quote_identifiers;
 
         // Keywords (filtered by context scope)
-        if !has_leading_quote {
+        if !has_leading_quote && self.config.suggest_keywords {
             let keywords = Self::keywords_for_scope(context.keyword_scope);
             for kw in keywords {
-                if kw.starts_with(&upper_word) {
+                if current_word.is_empty() || kw.starts_with(&upper_word) {
                     suggestions.push(Suggestion {
                         value: kw.to_string(),
                         description: Some("keyword".to_string()),
@@ -423,7 +648,11 @@ impl Completer for SqlCompleter {
             for table in &self.tables {
                 if current_word.is_empty() || table.to_lowercase().starts_with(&lower_word) {
                     suggestions.push(Suggestion {
-                        value: format!("\"{}\"", table),
+                        value: if quote {
+                            format!("\"{}\"", table)
+                        } else {
+                            table.clone()
+                        },
                         description: Some("table".to_string()),
                         style: None,
                         extra: None,
@@ -436,7 +665,11 @@ impl Completer for SqlCompleter {
             for view in &self.views {
                 if current_word.is_empty() || view.to_lowercase().starts_with(&lower_word) {
                     suggestions.push(Suggestion {
-                        value: format!("\"{}\"", view),
+                        value: if quote {
+                            format!("\"{}\"", view)
+                        } else {
+                            view.clone()
+                        },
                         description: Some("view".to_string()),
                         style: None,
                         extra: None,
@@ -448,11 +681,15 @@ impl Completer for SqlCompleter {
         }
 
         // Column names
-        if context.allow_columns {
+        if context.allow_columns && self.config.suggest_columns {
             for col in &self.all_columns {
                 if current_word.is_empty() || col.to_lowercase().starts_with(&lower_word) {
                     suggestions.push(Suggestion {
-                        value: format!("\"{}\"", col),
+                        value: if quote {
+                            format!("\"{}\"", col)
+                        } else {
+                            col.clone()
+                        },
                         description: Some("column".to_string()),
                         style: None,
                         extra: None,
@@ -468,7 +705,11 @@ impl Completer for SqlCompleter {
             for idx in &self.indices {
                 if current_word.is_empty() || idx.to_lowercase().starts_with(&lower_word) {
                     suggestions.push(Suggestion {
-                        value: format!("\"{}\"", idx),
+                        value: if quote {
+                            format!("\"{}\"", idx)
+                        } else {
+                            idx.clone()
+                        },
                         description: Some("index".to_string()),
                         style: None,
                         extra: None,
@@ -479,6 +720,14 @@ impl Completer for SqlCompleter {
             }
         }
 
+        self.cap_suggestions(suggestions)
+    }
+}
+
+impl SqlCompleter {
+    /// Cap the number of suggestions to the configured maximum
+    fn cap_suggestions(&self, mut suggestions: Vec<Suggestion>) -> Vec<Suggestion> {
+        suggestions.truncate(self.config.max_suggestions);
         suggestions
     }
 }
