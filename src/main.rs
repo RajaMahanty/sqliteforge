@@ -14,7 +14,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "sqliteforge",
-    version = "1.0.0",
+    version = "1.0.1",
     about = "A modern terminal-first SQLite client",
     long_about = "SQLiteForge is a modern, feature-rich terminal client for SQLite databases.\nIt provides syntax highlighting, autocompletion, persistent history, and multiple output formats."
 )]
@@ -44,7 +44,7 @@ fn main() {
     let cli = Cli::parse();
 
     if cli.version_info {
-        println!("SQLiteForge v1.0.0");
+        println!("SQLiteForge v1.0.1");
         println!("Built with Rust + rusqlite");
         println!("Terminal: crossterm");
         println!("Editor: reedline");
@@ -62,18 +62,18 @@ fn main() {
 
     // Apply CLI overrides to config
     let mut config = app.config.clone();
-    if let Some(ref mode) = cli.mode {
+    if let Some(mode) = &cli.mode {
         config.mode = mode.clone();
     }
 
     // Non-interactive mode: execute command
-    if let Some(ref cmd) = cli.command {
+    if let Some(cmd) = &cli.command {
         execute_noninteractive(&app.db, &config, cmd);
         return;
     }
 
     // Non-interactive mode: execute file
-    if let Some(ref file) = cli.file {
+    if let Some(file) = &cli.file {
         match std::fs::read_to_string(file) {
             Ok(content) => {
                 execute_noninteractive(&app.db, &config, &content);
