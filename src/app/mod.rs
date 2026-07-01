@@ -13,12 +13,10 @@ impl App {
         let config = Config::load();
 
         let db = match db_path {
-            Some(path) => Database::open(path).map_err(|e| {
-                format!("Failed to open database '{}': {}", path, e)
-            })?,
-            None => Database::open_in_memory().map_err(|e| {
-                format!("Failed to create in-memory database: {}", e)
-            })?,
+            Some(path) => Database::open(path)
+                .map_err(|e| format!("Failed to open database '{}': {}", path, e))?,
+            None => Database::open_in_memory()
+                .map_err(|e| format!("Failed to create in-memory database: {}", e))?,
         };
 
         Ok(Self { config, db })

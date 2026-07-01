@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result as SqliteResult, types::Value};
+use rusqlite::{types::Value, Connection, Result as SqliteResult};
 use std::path::Path;
 use std::time::Instant;
 
@@ -70,11 +70,7 @@ impl Database {
     fn execute_select(&self, sql: &str, start: Instant) -> Result<QueryResult, String> {
         let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
 
-        let columns: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
         let rows: Vec<Vec<String>> = stmt
             .query_map([], |row| {
@@ -215,9 +211,7 @@ impl Database {
     /// Get the CREATE statement for a database object
     pub fn get_schema(&self, name: &str) -> Option<String> {
         let sql = "SELECT sql FROM sqlite_master WHERE name = ?1";
-        self.conn
-            .query_row(sql, [name], |row| row.get(0))
-            .ok()
+        self.conn.query_row(sql, [name], |row| row.get(0)).ok()
     }
 
     /// Get all schema CREATE statements

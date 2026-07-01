@@ -44,10 +44,7 @@ impl History {
         }
 
         self.conn
-            .execute(
-                "INSERT INTO history (query) VALUES (?1)",
-                [trimmed],
-            )
+            .execute("INSERT INTO history (query) VALUES (?1)", [trimmed])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -56,7 +53,9 @@ impl History {
     pub fn search(&self, pattern: &str) -> Vec<String> {
         let like_pattern = format!("%{}%", pattern);
         self.conn
-            .prepare("SELECT DISTINCT query FROM history WHERE query LIKE ?1 ORDER BY id DESC LIMIT 50")
+            .prepare(
+                "SELECT DISTINCT query FROM history WHERE query LIKE ?1 ORDER BY id DESC LIMIT 50",
+            )
             .ok()
             .map(|mut stmt| {
                 stmt.query_map([&like_pattern], |row| row.get(0))

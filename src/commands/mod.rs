@@ -1,5 +1,5 @@
-use crate::database::Database;
 use crate::config::Config;
+use crate::database::Database;
 use std::fs;
 
 /// Result of executing a dot command
@@ -23,18 +23,10 @@ pub enum DotCommandResult {
 }
 
 /// Process dot commands
-pub fn execute_dot_command(
-    input: &str,
-    db: &Database,
-    config: &Config,
-) -> DotCommandResult {
+pub fn execute_dot_command(input: &str, db: &Database, config: &Config) -> DotCommandResult {
     let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
     let command = parts[0].to_lowercase();
-    let args = if parts.len() > 1 {
-        parts[1].trim()
-    } else {
-        ""
-    };
+    let args = if parts.len() > 1 { parts[1].trim() } else { "" };
 
     match command.as_str() {
         ".help" => DotCommandResult::Output(help_text()),
@@ -51,7 +43,7 @@ pub fn execute_dot_command(
             if args.is_empty() {
                 let schemas = db.get_all_schemas();
                 if schemas.is_empty() {
-                    DotCommandResult::Output("No schema found.".to_string())
+                    DotCommandResult::Output("No Schema Found".to_string())
                 } else {
                     DotCommandResult::Output(schemas.join(";\n\n") + ";")
                 }
@@ -97,9 +89,7 @@ pub fn execute_dot_command(
                 match args.to_lowercase().as_str() {
                     "on" | "yes" | "true" | "1" => DotCommandResult::HeadersChanged(true),
                     "off" | "no" | "false" | "0" => DotCommandResult::HeadersChanged(false),
-                    _ => DotCommandResult::Error(
-                        "Usage: .headers on|off".to_string(),
-                    ),
+                    _ => DotCommandResult::Error("Usage: .headers on|off".to_string()),
                 }
             }
         }
@@ -129,10 +119,7 @@ pub fn execute_dot_command(
         },
         ".nullvalue" => {
             if args.is_empty() {
-                DotCommandResult::Output(format!(
-                    "Nullvalue: \"{}\"",
-                    config.nullvalue
-                ))
+                DotCommandResult::Output(format!("Nullvalue: \"{}\"", config.nullvalue))
             } else {
                 DotCommandResult::NullvalueChanged(args.to_string())
             }
@@ -141,9 +128,15 @@ pub fn execute_dot_command(
             let mut out = String::new();
             out.push_str(&format!("    database: {}\n", db.path));
             out.push_str(&format!("        mode: {}\n", config.mode));
-            out.push_str(&format!("     headers: {}\n", if config.headers { "on" } else { "off" }));
+            out.push_str(&format!(
+                "     headers: {}\n",
+                if config.headers { "on" } else { "off" }
+            ));
             out.push_str(&format!("   nullvalue: \"{}\"\n", config.nullvalue));
-            out.push_str(&format!("     history: {}\n", if config.history { "on" } else { "off" }));
+            out.push_str(&format!(
+                "     history: {}\n",
+                if config.history { "on" } else { "off" }
+            ));
             out.push_str(&format!("       theme: {}\n", config.theme));
             DotCommandResult::Output(out)
         }
@@ -167,7 +160,10 @@ pub fn execute_dot_command(
                 }
             }
         }
-        _ => DotCommandResult::Error(format!("Unknown command: {}. Use .help for a list.", command)),
+        _ => DotCommandResult::Error(format!(
+            "Unknown command: {}. Use .help for a list.",
+            command
+        )),
     }
 }
 
@@ -209,4 +205,3 @@ fn help_text() -> String {
         config_path.display()
     )
 }
-

@@ -1,4 +1,4 @@
-use reedline::{Validator, ValidationResult};
+use reedline::{ValidationResult, Validator};
 
 /// SQL input validator - determines if the input is complete.
 /// A SQL statement is complete when it ends with a semicolon
@@ -69,5 +69,3 @@ pub fn calculate_indent(buffer: &str) -> usize {
 
     (depth as usize) * indent_width
 }
-
-

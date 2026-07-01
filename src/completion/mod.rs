@@ -25,69 +25,280 @@ pub struct SqlCompleter {
 
 /// Keywords valid in expressions (after SELECT, WHERE, ON, HAVING, etc.)
 const EXPR_KEYWORDS: &[&str] = &[
-    "ALL", "AND", "AS", "ASC", "BETWEEN", "CASE", "CAST", "CURRENT_DATE",
-    "CURRENT_TIME", "CURRENT_TIMESTAMP", "DESC", "DISTINCT", "ELSE", "END",
-    "ESCAPE", "EXCEPT", "EXISTS", "FILTER", "GLOB", "IN", "IS", "ISNULL",
-    "LIKE", "LIMIT", "MATCH", "NOT", "NOTNULL", "NULL", "NULLS", "OFFSET",
-    "OR", "ORDER", "OVER", "REGEXP", "THEN", "UNION", "WHEN", "WINDOW",
+    "ALL",
+    "AND",
+    "AS",
+    "ASC",
+    "BETWEEN",
+    "CASE",
+    "CAST",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "DESC",
+    "DISTINCT",
+    "ELSE",
+    "END",
+    "ESCAPE",
+    "EXCEPT",
+    "EXISTS",
+    "FILTER",
+    "GLOB",
+    "IN",
+    "IS",
+    "ISNULL",
+    "LIKE",
+    "LIMIT",
+    "MATCH",
+    "NOT",
+    "NOTNULL",
+    "NULL",
+    "NULLS",
+    "OFFSET",
+    "OR",
+    "ORDER",
+    "OVER",
+    "REGEXP",
+    "THEN",
+    "UNION",
+    "WHEN",
+    "WINDOW",
     // Functions
-    "COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL", "GROUP_CONCAT",
-    "ABS", "CHANGES", "COALESCE", "IFNULL", "IIF", "INSTR", "HEX", "LENGTH",
-    "LIKELY", "LOAD_EXTENSION", "LOWER", "LTRIM", "NULLIF", "PRINTF", "QUOTE",
-    "RANDOM", "RANDOMBLOB", "REPLACE", "ROUND", "RTRIM", "SOUNDEX",
-    "SQLITE_VERSION", "SUBSTR", "SUBSTRING", "TOTAL_CHANGES", "TRIM",
-    "TYPEOF", "UNICODE", "UNLIKELY", "UPPER", "ZEROBLOB",
-    "DATE", "TIME", "DATETIME", "JULIANDAY", "STRFTIME", "UNIXEPOCH",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "TOTAL",
+    "GROUP_CONCAT",
+    "ABS",
+    "CHANGES",
+    "COALESCE",
+    "IFNULL",
+    "IIF",
+    "INSTR",
+    "HEX",
+    "LENGTH",
+    "LIKELY",
+    "LOAD_EXTENSION",
+    "LOWER",
+    "LTRIM",
+    "NULLIF",
+    "PRINTF",
+    "QUOTE",
+    "RANDOM",
+    "RANDOMBLOB",
+    "REPLACE",
+    "ROUND",
+    "RTRIM",
+    "SOUNDEX",
+    "SQLITE_VERSION",
+    "SUBSTR",
+    "SUBSTRING",
+    "TOTAL_CHANGES",
+    "TRIM",
+    "TYPEOF",
+    "UNICODE",
+    "UNLIKELY",
+    "UPPER",
+    "ZEROBLOB",
+    "DATE",
+    "TIME",
+    "DATETIME",
+    "JULIANDAY",
+    "STRFTIME",
+    "UNIXEPOCH",
     // Types (for CAST)
-    "INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC", "BOOLEAN",
+    "INTEGER",
+    "REAL",
+    "TEXT",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
 ];
 
 /// Keywords valid after a table/value (clause-level transitions)
 const CLAUSE_KEYWORDS: &[&str] = &[
-    "AND", "AS", "ASC", "BY", "CROSS", "DESC", "EXCEPT", "FROM", "FULL",
-    "GROUP", "HAVING", "INNER", "INTERSECT", "JOIN", "LEFT", "LIMIT",
-    "NATURAL", "OFFSET", "ON", "OR", "ORDER", "OUTER", "RETURNING", "RIGHT",
-    "UNION", "USING", "WHERE",
+    "AND",
+    "AS",
+    "ASC",
+    "BY",
+    "CROSS",
+    "DESC",
+    "EXCEPT",
+    "FROM",
+    "FULL",
+    "GROUP",
+    "HAVING",
+    "INNER",
+    "INTERSECT",
+    "JOIN",
+    "LEFT",
+    "LIMIT",
+    "NATURAL",
+    "OFFSET",
+    "ON",
+    "OR",
+    "ORDER",
+    "OUTER",
+    "RETURNING",
+    "RIGHT",
+    "UNION",
+    "USING",
+    "WHERE",
 ];
 
 /// Keywords to start a new statement (when nothing or general context)
 const STMT_KEYWORDS: &[&str] = &[
-    "ALTER", "ANALYZE", "ATTACH", "BEGIN", "COMMIT", "CREATE", "DELETE",
-    "DETACH", "DROP", "EXPLAIN", "INSERT", "PRAGMA", "REINDEX", "RELEASE",
-    "REPLACE", "ROLLBACK", "SAVEPOINT", "SELECT", "UPDATE", "VACUUM", "WITH",
+    "ALTER",
+    "ANALYZE",
+    "ATTACH",
+    "BEGIN",
+    "COMMIT",
+    "CREATE",
+    "DELETE",
+    "DETACH",
+    "DROP",
+    "EXPLAIN",
+    "INSERT",
+    "PRAGMA",
+    "REINDEX",
+    "RELEASE",
+    "REPLACE",
+    "ROLLBACK",
+    "SAVEPOINT",
+    "SELECT",
+    "UPDATE",
+    "VACUUM",
+    "WITH",
 ];
 
 /// DDL-specific keywords (after CREATE/ALTER/DROP)
 const DDL_KEYWORDS: &[&str] = &[
-    "TABLE", "INDEX", "VIEW", "TRIGGER", "VIRTUAL", "TEMP", "TEMPORARY",
-    "IF", "EXISTS", "NOT", "PRIMARY", "KEY", "FOREIGN", "REFERENCES",
-    "UNIQUE", "CHECK", "DEFAULT", "AUTOINCREMENT", "CONSTRAINT", "CONFLICT",
-    "CASCADE", "RESTRICT", "NO", "ACTION", "ABORT", "FAIL", "IGNORE",
-    "COLLATE", "DEFERRABLE", "INITIALLY", "DEFERRED", "IMMEDIATE",
-    "COLUMN", "RENAME", "ADD", "GENERATED", "ALWAYS", "NULL",
-    "INTEGER", "REAL", "TEXT", "BLOB", "NUMERIC", "BOOLEAN",
-    "EXCLUSIVE", "WITHOUT",
+    "TABLE",
+    "INDEX",
+    "VIEW",
+    "TRIGGER",
+    "VIRTUAL",
+    "TEMP",
+    "TEMPORARY",
+    "IF",
+    "EXISTS",
+    "NOT",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "UNIQUE",
+    "CHECK",
+    "DEFAULT",
+    "AUTOINCREMENT",
+    "CONSTRAINT",
+    "CONFLICT",
+    "CASCADE",
+    "RESTRICT",
+    "NO",
+    "ACTION",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "COLLATE",
+    "DEFERRABLE",
+    "INITIALLY",
+    "DEFERRED",
+    "IMMEDIATE",
+    "COLUMN",
+    "RENAME",
+    "ADD",
+    "GENERATED",
+    "ALWAYS",
+    "NULL",
+    "INTEGER",
+    "REAL",
+    "TEXT",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
+    "EXCLUSIVE",
+    "WITHOUT",
 ];
 
 /// Column constraint keywords (inside CREATE TABLE parentheses)
 const COLUMN_DEF_KEYWORDS: &[&str] = &[
-    "PRIMARY", "KEY", "NOT", "NULL", "UNIQUE", "CHECK", "DEFAULT",
-    "AUTOINCREMENT", "REFERENCES", "COLLATE", "CONSTRAINT",
-    "FOREIGN", "ON", "DELETE", "UPDATE", "CASCADE", "RESTRICT",
-    "SET", "NO", "ACTION", "ABORT", "FAIL", "IGNORE", "REPLACE",
-    "DEFERRABLE", "INITIALLY", "DEFERRED", "IMMEDIATE",
-    "GENERATED", "ALWAYS", "AS", "STORED", "VIRTUAL",
+    "PRIMARY",
+    "KEY",
+    "NOT",
+    "NULL",
+    "UNIQUE",
+    "CHECK",
+    "DEFAULT",
+    "AUTOINCREMENT",
+    "REFERENCES",
+    "COLLATE",
+    "CONSTRAINT",
+    "FOREIGN",
+    "ON",
+    "DELETE",
+    "UPDATE",
+    "CASCADE",
+    "RESTRICT",
+    "SET",
+    "NO",
+    "ACTION",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "REPLACE",
+    "DEFERRABLE",
+    "INITIALLY",
+    "DEFERRED",
+    "IMMEDIATE",
+    "GENERATED",
+    "ALWAYS",
+    "AS",
+    "STORED",
+    "VIRTUAL",
     // Data types
-    "INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC", "BOOLEAN",
-    "VARCHAR", "CHAR", "INT", "BIGINT", "SMALLINT", "TINYINT",
-    "FLOAT", "DOUBLE", "DECIMAL", "DATE", "DATETIME", "TIMESTAMP",
+    "INTEGER",
+    "TEXT",
+    "REAL",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
+    "VARCHAR",
+    "CHAR",
+    "INT",
+    "BIGINT",
+    "SMALLINT",
+    "TINYINT",
+    "FLOAT",
+    "DOUBLE",
+    "DECIMAL",
+    "DATE",
+    "DATETIME",
+    "TIMESTAMP",
 ];
 
 /// INSERT-specific keywords
 const INSERT_KEYWORDS: &[&str] = &[
-    "INTO", "VALUES", "DEFAULT", "SELECT", "OR", "REPLACE", "ABORT",
-    "FAIL", "IGNORE", "ROLLBACK", "ON", "CONFLICT", "DO", "NOTHING",
-    "UPDATE", "SET", "WHERE", "RETURNING",
+    "INTO",
+    "VALUES",
+    "DEFAULT",
+    "SELECT",
+    "OR",
+    "REPLACE",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "ROLLBACK",
+    "ON",
+    "CONFLICT",
+    "DO",
+    "NOTHING",
+    "UPDATE",
+    "SET",
+    "WHERE",
+    "RETURNING",
 ];
 
 /// Which keyword set to use
@@ -162,8 +373,20 @@ impl SqlCompleter {
 
     fn dot_command_list() -> Vec<String> {
         vec![
-            ".help", ".quit", ".exit", ".tables", ".schema", ".indices", ".mode", ".headers",
-            ".read", ".output", ".dump", ".nullvalue", ".show", ".preview",
+            ".help",
+            ".quit",
+            ".exit",
+            ".tables",
+            ".schema",
+            ".indices",
+            ".mode",
+            ".headers",
+            ".read",
+            ".output",
+            ".dump",
+            ".nullvalue",
+            ".show",
+            ".preview",
         ]
         .into_iter()
         .map(String::from)
@@ -193,7 +416,11 @@ impl SqlCompleter {
     }
 
     /// Try to detect a "table"."col" pattern and return table-qualified column suggestions.
-    fn try_qualified_completion(&self, line_to_cursor: &str, pos: usize) -> Option<Vec<Suggestion>> {
+    fn try_qualified_completion(
+        &self,
+        line_to_cursor: &str,
+        pos: usize,
+    ) -> Option<Vec<Suggestion>> {
         let before = line_to_cursor;
         let dot_pos = before.rfind('.')?;
         let after_dot = &before[dot_pos + 1..];
@@ -220,12 +447,20 @@ impl SqlCompleter {
             for (table_name, cols) in &self.table_columns {
                 if table_name.to_lowercase() == alias_lower {
                     return Some(self.build_column_suggestions(
-                        cols, col_prefix, span_start, pos, col_has_quote,
+                        cols,
+                        col_prefix,
+                        span_start,
+                        pos,
+                        col_has_quote,
                     ));
                 }
             }
             return Some(self.build_column_suggestions(
-                &self.all_columns, col_prefix, span_start, pos, col_has_quote,
+                &self.all_columns,
+                col_prefix,
+                span_start,
+                pos,
+                col_has_quote,
             ));
         }
 
@@ -277,7 +512,8 @@ impl SqlCompleter {
             return open_parens > close_parens;
         }
         // Also handle CREATE TEMP TABLE, CREATE TEMPORARY TABLE
-        if let Some(ct_pos) = upper.rfind("CREATE TEMP TABLE")
+        if let Some(ct_pos) = upper
+            .rfind("CREATE TEMP TABLE")
             .or_else(|| upper.rfind("CREATE TEMPORARY TABLE"))
         {
             let after_ct = &line_to_cursor[ct_pos..];
@@ -307,15 +543,13 @@ impl SqlCompleter {
 
         match prev_keyword.as_deref() {
             // After FROM/JOIN variants: only tables and views
-            Some("FROM") | Some("JOIN") => {
-                CompletionContext {
-                    keyword_scope: KeywordScope::None,
-                    allow_tables: true,
-                    allow_columns: false,
-                    allow_indices: false,
-                    eager: true,
-                }
-            }
+            Some("FROM") | Some("JOIN") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
             // After INTO: tables (for INSERT INTO)
             Some("INTO") => CompletionContext {
                 keyword_scope: KeywordScope::None,
@@ -366,8 +600,8 @@ impl SqlCompleter {
             },
             // After WHERE/ON/AND/OR/operators: expression keywords + columns
             Some("WHERE") | Some("ON") | Some("SET") | Some("AND") | Some("OR")
-            | Some("BETWEEN") | Some("CASE") | Some("WHEN") | Some("THEN")
-            | Some("ELSE") | Some("LIKE") | Some("IN") | Some("VALUES") => CompletionContext {
+            | Some("BETWEEN") | Some("CASE") | Some("WHEN") | Some("THEN") | Some("ELSE")
+            | Some("LIKE") | Some("IN") | Some("VALUES") => CompletionContext {
                 keyword_scope: KeywordScope::Expression,
                 allow_tables: true,
                 allow_columns: true,
@@ -415,8 +649,8 @@ impl SqlCompleter {
                 eager: true,
             },
             // After join modifiers: suggest JOIN + tables
-            Some("INNER") | Some("LEFT") | Some("RIGHT") | Some("CROSS")
-            | Some("NATURAL") | Some("OUTER") | Some("FULL") => CompletionContext {
+            Some("INNER") | Some("LEFT") | Some("RIGHT") | Some("CROSS") | Some("NATURAL")
+            | Some("OUTER") | Some("FULL") => CompletionContext {
                 keyword_scope: KeywordScope::None,
                 allow_tables: true,
                 allow_columns: false,
@@ -537,8 +771,10 @@ impl SqlCompleter {
 
         // Extract the unquoted token
         let end = i;
-        while i > 0 && !bytes[i - 1].is_ascii_whitespace()
-            && bytes[i - 1] != b'(' && bytes[i - 1] != b','
+        while i > 0
+            && !bytes[i - 1].is_ascii_whitespace()
+            && bytes[i - 1] != b'('
+            && bytes[i - 1] != b','
             && bytes[i - 1] != b')'
         {
             i -= 1;
@@ -547,12 +783,11 @@ impl SqlCompleter {
         let upper = token.to_uppercase();
 
         let context_keywords = [
-            "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS",
-            "NATURAL", "OUTER", "FULL", "ON", "INTO", "TABLE", "UPDATE", "SET",
-            "HAVING", "BY", "INDEX", "AND", "OR", "BETWEEN", "CASE", "WHEN",
-            "THEN", "ELSE", "LIKE", "ORDER", "GROUP", "DELETE", "INSERT",
-            "VALUES", "CREATE", "ALTER", "DROP", "IN", "AS", "PRAGMA",
-            "LIMIT", "OFFSET", "IF", "EXISTS", "NOT", "ADD", "RENAME",
+            "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS", "NATURAL",
+            "OUTER", "FULL", "ON", "INTO", "TABLE", "UPDATE", "SET", "HAVING", "BY", "INDEX",
+            "AND", "OR", "BETWEEN", "CASE", "WHEN", "THEN", "ELSE", "LIKE", "ORDER", "GROUP",
+            "DELETE", "INSERT", "VALUES", "CREATE", "ALTER", "DROP", "IN", "AS", "PRAGMA", "LIMIT",
+            "OFFSET", "IF", "EXISTS", "NOT", "ADD", "RENAME",
         ];
 
         if context_keywords.contains(&upper.as_str()) {

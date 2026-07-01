@@ -1,10 +1,10 @@
-pub mod validator;
 pub mod highlighter;
 pub mod prompt;
+pub mod validator;
 
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, Emacs, EditCommand, KeyCode, KeyModifiers,
-    MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    default_emacs_keybindings, ColumnarMenu, EditCommand, Emacs, FileBackedHistory, KeyCode,
+    KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
 };
 
 use std::collections::HashMap;
@@ -80,15 +80,10 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
         ReedlineEvent::ExecuteHostCommand("__explorer_toggle__".to_string()),
     );
 
-    // ── Smart Enter: intercept Enter via host command for auto-indent ────
-    let auto_indent = config.keybindings.auto_indent;
-    if auto_indent {
-        keybindings.add_binding(
-            KeyModifiers::NONE,
-            KeyCode::Enter,
-            ReedlineEvent::ExecuteHostCommand("__smart_enter__".to_string()),
-        );
-    }
+    // ── Smart Enter: use reedline's native Enter which handles menu selection,
+    // validator-based submission, and multiline newline insertion ────
+    // Note: auto_indent is handled separately via the __auto_indent__ host command
+    // which is no longer needed since reedline's Enter handles everything natively.
 
     // ── Auto-close brackets ─────────────────────────────────────────────
     if config.keybindings.auto_pairs {
@@ -224,8 +219,16 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
             .with_marker(""),
     );
 
+    // Build reedline history
+    let reedline_history = Box::new(
+        FileBackedHistory::with_file(1000, History::history_path().with_extension("txt"))
+            .expect("Failed to initialize reedline history"),
+    );
+
     // Build reedline with validator for multi-line support
     let mut line_editor = Reedline::create()
+        .with_history(reedline_history)
+        .with_history_exclusion_prefix(Some("__".to_string()))
         .with_completer(Box::new(completer))
         .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
         .with_highlighter(Box::new(SqlHighlighter))
@@ -234,13 +237,6 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
         .with_ansi_colors(true)
         .with_quick_completions(true)
         .with_partial_completions(true);
-
-    // Load existing history into reedline
-    if let Some(ref hist) = history {
-        for entry in hist.all_entries() {
-            let _ = entry;
-        }
-    }
 
     // Print welcome banner
     print_banner(&db.path);
@@ -256,95 +252,6 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
         match line_editor.read_line(&prompt) {
             Ok(Signal::Success(input)) => {
                 let trimmed = input.trim();
-
-                // ── Smart Enter: buffer is preserved via suspension ─────
-                if trimmed == "__smart_enter__" {
-                    let buffer = line_editor.current_buffer_contents().to_string();
-                    let buffer_trimmed = buffer.trim();
-
-                    // Empty buffer → clear and continue
-                    if buffer_trimmed.is_empty() {
-                        line_editor.run_edit_commands(&[EditCommand::Clear]);
-                        continue;
-                    }
-
-                    // Dot commands are single-line → submit immediately
-                    if buffer_trimmed.starts_with('.') {
-                        let sql = buffer_trimmed.to_string();
-                        line_editor.run_edit_commands(&[EditCommand::Clear]);
-
-                        if let Some(ref hist) = history {
-                            let _ = hist.add(&sql);
-                        }
-
-                        process_dot_command(
-                            &sql, &db, &mut config, &mut output_file,
-                            &mut line_editor, &mut explorer, &mut should_exit,
-                        );
-                        continue;
-                    }
-
-                    // SQL ending with ';' → submit
-                    if buffer_trimmed.ends_with(';') {
-                        let sql = buffer_trimmed.to_string();
-                        line_editor.run_edit_commands(&[EditCommand::Clear]);
-
-                        if let Some(ref hist) = history {
-                            let _ = hist.add(&sql);
-                        }
-
-                        execute_sql(
-                            &sql, &db, &config, &output_file,
-                            &mut line_editor, &mut explorer,
-                        );
-                        continue;
-                    }
-
-                    // Smart Enter inside brackets: if cursor is inside (), [], or {}
-                    let pos = line_editor.current_insertion_point();
-                    let is_bracket_pair = if pos > 0 && pos < buffer.len() {
-                        let bytes = buffer.as_bytes();
-                        let left = bytes[pos - 1];
-                        let right = bytes[pos];
-                        (left == b'(' && right == b')')
-                            || (left == b'[' && right == b']')
-                            || (left == b'{' && right == b'}')
-                    } else {
-                        false
-                    };
-
-                    if is_bracket_pair {
-                        let indent = validator::calculate_indent(&buffer[..pos]);
-                        let outer_indent = indent.saturating_sub(4);
-                        let insert_str = format!("\n{}\n{}", " ".repeat(indent), " ".repeat(outer_indent));
-
-                        let mut cmds = vec![
-                            EditCommand::InsertString(insert_str),
-                        ];
-                        // Move left to place the cursor on the indented middle line
-                        let move_left = 1 + outer_indent;
-                        for _ in 0..move_left {
-                            cmds.push(EditCommand::MoveLeft { select: false });
-                        }
-                        line_editor.run_edit_commands(&cmds);
-                        continue;
-                    }
-
-                    // Incomplete SQL → insert newline + smart indentation
-                    let indent_spaces = validator::calculate_indent(&buffer);
-
-                    let mut cmds = vec![
-                        EditCommand::MoveToEnd { select: false },
-                        EditCommand::InsertNewline,
-                    ];
-                    if indent_spaces > 0 {
-                        cmds.push(EditCommand::InsertString(
-                            " ".repeat(indent_spaces),
-                        ));
-                    }
-                    line_editor.run_edit_commands(&cmds);
-                    continue;
-                }
 
                 // ── Auto-close / Skip handlers ──────────────────────────
                 if trimmed == "__char_close_paren__" {
@@ -390,16 +297,25 @@ pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::E
                 // Dot commands
                 if trimmed.starts_with('.') {
                     process_dot_command(
-                        trimmed, &db, &mut config, &mut output_file,
-                        &mut line_editor, &mut explorer, &mut should_exit,
+                        trimmed,
+                        &db,
+                        &mut config,
+                        &mut output_file,
+                        &mut line_editor,
+                        &mut explorer,
+                        &mut should_exit,
                     );
                     continue;
                 }
 
                 // SQL execution
                 execute_sql(
-                    trimmed, &db, &config, &output_file,
-                    &mut line_editor, &mut explorer,
+                    trimmed,
+                    &db,
+                    &config,
+                    &output_file,
+                    &mut line_editor,
+                    &mut explorer,
                 );
             }
             Ok(Signal::CtrlC) => {
@@ -483,12 +399,7 @@ fn execute_sql(
 ) {
     match db.execute_query(sql) {
         Ok(result) => {
-            let output = Renderer::render(
-                &result,
-                &config.mode,
-                config.headers,
-                &config.nullvalue,
-            );
+            let output = Renderer::render(&result, &config.mode, config.headers, &config.nullvalue);
             output_text(&output, output_file);
 
             // Refresh completer after DDL statements
@@ -560,7 +471,9 @@ fn print_banner(db_path: &str) {
         "  \x1b[37m\x1b[1mv1.0\x1b[0m  \x1b[90m─  A modern terminal-first SQLite client\x1b[0m"
     );
     println!("  \x1b[90mConnected to: \x1b[33m{}\x1b[0m", db_path);
-    println!("  \x1b[90mType \x1b[36m.help\x1b[90m for commands, \x1b[36mCtrl+D\x1b[90m to exit\x1b[0m");
+    println!(
+        "  \x1b[90mType \x1b[36m.help\x1b[90m for commands, \x1b[36mCtrl+D\x1b[90m to exit\x1b[0m"
+    );
     println!();
 }
 
@@ -600,4 +513,3 @@ fn handle_quote_char(line_editor: &mut Reedline, q: char) {
         ]);
     }
 }
-

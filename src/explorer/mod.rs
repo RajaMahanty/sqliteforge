@@ -112,10 +112,13 @@ impl Explorer {
             out.push_str(&format!("║  {}{}║\n", section, " ".repeat(pad)));
 
             for (i, table) in self.tables.iter().enumerate() {
-                let is_last = i == self.tables.len() - 1
-                    && self.views.is_empty()
-                    && self.indices.is_empty();
-                let connector = if is_last && !self.config.show_columns { "└── " } else { "├── " };
+                let is_last =
+                    i == self.tables.len() - 1 && self.views.is_empty() && self.indices.is_empty();
+                let connector = if is_last && !self.config.show_columns {
+                    "└── "
+                } else {
+                    "├── "
+                };
 
                 // Format table name with optional row count
                 let table_display = if self.config.show_row_counts {
@@ -144,13 +147,15 @@ impl Explorer {
                             };
                             let col_connector = if is_last_col { "└─" } else { "├─" };
 
-                            let col_display = if self.config.show_column_types && !col_type.is_empty() {
-                                format!("{} {}", col_name, col_type)
-                            } else {
-                                col_name.clone()
-                            };
+                            let col_display =
+                                if self.config.show_column_types && !col_type.is_empty() {
+                                    format!("{} {}", col_name, col_type)
+                                } else {
+                                    col_name.clone()
+                                };
 
-                            let prefix = format!("{}{} {}", tree_prefix, col_connector, col_display);
+                            let prefix =
+                                format!("{}{} {}", tree_prefix, col_connector, col_display);
                             let pad = inner.saturating_sub(prefix.len() + 2);
                             // Dim color for column lines
                             out.push_str(&format!(

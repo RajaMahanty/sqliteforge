@@ -87,10 +87,7 @@ fn main() {
     }
 
     // Interactive mode
-    let app = app::App {
-        config,
-        db: app.db,
-    };
+    let app = app::App { config, db: app.db };
     if let Err(e) = app.run() {
         eprintln!("\x1b[31mError: {}\x1b[0m", e);
         std::process::exit(1);
