@@ -210,8 +210,6 @@ impl Explorer {
         out.push('╚');
         out.push_str(&"═".repeat(inner));
         out.push_str("╝\n");
-
-        out.push_str("  Press Ctrl+E to close\n");
         out
     }
 }
