@@ -8,6 +8,14 @@
 
 ---
 
+## 📖 Tutorial: Build Your Own SQLiteForge
+
+Curious how this was built? This repository includes a complete, step-by-step tutorial reconstructing the entire codebase from scratch.
+
+[**Read the "Build Your Own SQLiteForge" Tutorial**](build-your-own-sqliteforge/00-index.md)
+
+---
+
 ## Features
 
 - 🎨 **SQL Syntax Highlighting** — Keywords, strings, numbers, comments are color-coded
@@ -50,31 +58,9 @@ cargo build --release
 
 ---
 
-## Installation (System-wide)
+## Installation
 
-### Option 1: Using the Install Script (Recommended)
-
-```bash
-# From the project directory
-chmod +x install.sh
-./install.sh
-```
-
-This will:
-- ✅ Check/install Rust toolchain
-- ✅ Install build dependencies (`build-essential`, `pkg-config`)
-- ✅ Build the release binary
-- ✅ Install to `/usr/local/bin/sqliteforge`
-- ✅ Create default config at `~/.config/sqliteforge/config.toml`
-- ✅ Install man page (`man sqliteforge`)
-- ✅ Install bash tab completion
-
-**Custom prefix:**
-```bash
-./install.sh --prefix /opt/sqliteforge
-```
-
-### Option 2: Manual Installation
+### System-wide Installation
 
 ```bash
 # 1. Build release binary
@@ -98,7 +84,7 @@ EOF
 sqliteforge --version
 ```
 
-### Option 3: Cargo Install
+### Cargo Install
 
 ```bash
 cargo install --path .
@@ -114,17 +100,11 @@ This installs to `~/.cargo/bin/` (make sure it's in your `PATH`).
 # Remove binary
 sudo rm /usr/local/bin/sqliteforge
 
-# Remove man page
-sudo rm /usr/local/share/man/man1/sqliteforge.1
-
 # Remove config (optional)
 rm -rf ~/.config/sqliteforge
 
 # Remove history (optional)
 rm -rf ~/.local/share/sqliteforge
-
-# Remove bash completion (optional)
-rm ~/.local/share/bash-completion/completions/sqliteforge
 ```
 
 ---
@@ -235,8 +215,6 @@ src/
 |-----------|---------|
 | Language | Rust |
 | Database | rusqlite (bundled SQLite) |
-| Terminal | crossterm |
-| UI Framework | ratatui |
 | Line Editor | reedline |
 | Config | serde + toml |
 | CLI Args | clap |
