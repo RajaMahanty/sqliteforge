@@ -1,0 +1,3590 @@
+---FILE: Cargo.toml ---
+[package]
+name = "sqliteforge"
+version = "1.0.1"
+edition = "2021"
+description = "A modern terminal-first SQLite client"
+license = "MIT"
+
+[[bin]]
+name = "sqliteforge"
+path = "src/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+crossterm = "0.28"
+ratatui = "0.29"
+reedline = "0.38"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+unicode-width = "0.2"
+regex = "1"
+nu-ansi-term = "0.50"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+
+---FILE: ./renderer/mod.rs ---
+
+use crate::database::QueryResult;
+use unicode_width::UnicodeWidthStr;
+
+/// Render query results in different output modes
+pub struct Renderer;
+
+impl Renderer {
+    /// Render results based on the specified mode
+    pub fn render(result: &QueryResult, mode: &str, headers: bool, nullvalue: &str) -> String {
+        if !result.is_select || result.columns.is_empty() {
+            return Self::render_modify_result(result);
+        }
+
+        match mode {
+            "box" => Self::render_box(result, headers, nullvalue),
+            "table" => Self::render_table(result, headers, nullvalue),
+            "column" => Self::render_column(result, headers, nullvalue),
+            "markdown" => Self::render_markdown(result, headers, nullvalue),
+            "csv" => Self::render_csv(result, headers),
+            "json" => Self::render_json(result),
+            "list" => Self::render_list(result, headers),
+            _ => Self::render_box(result, headers, nullvalue),
+        }
+    }
+
+    /// Render non-SELECT result
+    fn render_modify_result(result: &QueryResult) -> String {
+        format!(
+            "Changes: {}\nExecution Time: {:.1} ms",
+            result.rows_affected, result.execution_time_ms
+        )
+    }
+
+    /// Compute column widths
+    fn column_widths(result: &QueryResult, _nullvalue: &str) -> Vec<usize> {
+        let mut widths: Vec<usize> = result
+            .columns
+            .iter()
+            .map(|c| UnicodeWidthStr::width(c.as_str()))
+            .collect();
+
+        for row in &result.rows {
+            for (i, val) in row.iter().enumerate() {
+                if i < widths.len() {
+                    let w = UnicodeWidthStr::width(val.as_str());
+                    if w > widths[i] {
+                        widths[i] = w;
+                    }
+                }
+            }
+        }
+        widths
+    }
+
+    /// Box mode (default) - Unicode box drawing
+    fn render_box(result: &QueryResult, headers: bool, nullvalue: &str) -> String {
+        let widths = Self::column_widths(result, nullvalue);
+        let mut out = String::new();
+
+        // Top border
+        out.push('┌');
+        for (i, w) in widths.iter().enumerate() {
+            out.push_str(&"─".repeat(w + 2));
+            if i < widths.len() - 1 {
+                out.push('┬');
+            }
+        }
+        out.push_str("┐\n");
+
+        // Header
+        if headers {
+            out.push('│');
+            for (i, col) in result.columns.iter().enumerate() {
+                let pad = widths[i] - UnicodeWidthStr::width(col.as_str());
+                out.push(' ');
+                out.push_str(col);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" │");
+            }
+            out.push('\n');
+
+            // Header separator
+            out.push('├');
+            for (i, w) in widths.iter().enumerate() {
+                out.push_str(&"─".repeat(w + 2));
+                if i < widths.len() - 1 {
+                    out.push('┼');
+                }
+            }
+            out.push_str("┤\n");
+        }
+
+        // Rows
+        for row in &result.rows {
+            out.push('│');
+            for (i, val) in row.iter().enumerate() {
+                let w = if i < widths.len() { widths[i] } else { 0 };
+                let display_width = UnicodeWidthStr::width(val.as_str());
+                let pad = if w >= display_width {
+                    w - display_width
+                } else {
+                    0
+                };
+                out.push(' ');
+                out.push_str(val);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" │");
+            }
+            out.push('\n');
+        }
+
+        // Bottom border
+        out.push('└');
+        for (i, w) in widths.iter().enumerate() {
+            out.push_str(&"─".repeat(w + 2));
+            if i < widths.len() - 1 {
+                out.push('┴');
+            }
+        }
+        out.push_str("┘\n");
+
+        // Stats
+        out.push_str(&format!(
+            "Rows: {}  Execution Time: {:.1} ms",
+            result.rows.len(),
+            result.execution_time_ms
+        ));
+
+        out
+    }
+
+    /// Table mode - ASCII table
+    fn render_table(result: &QueryResult, headers: bool, nullvalue: &str) -> String {
+        let widths = Self::column_widths(result, nullvalue);
+        let mut out = String::new();
+
+        let separator = || {
+            let mut s = String::from("+");
+            for w in &widths {
+                s.push_str(&"-".repeat(w + 2));
+                s.push('+');
+            }
+            s.push('\n');
+            s
+        };
+
+        out.push_str(&separator());
+
+        if headers {
+            out.push('|');
+            for (i, col) in result.columns.iter().enumerate() {
+                let pad = widths[i] - UnicodeWidthStr::width(col.as_str());
+                out.push(' ');
+                out.push_str(col);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" |");
+            }
+            out.push('\n');
+            out.push_str(&separator());
+        }
+
+        for row in &result.rows {
+            out.push('|');
+            for (i, val) in row.iter().enumerate() {
+                let w = if i < widths.len() { widths[i] } else { 0 };
+                let display_width = UnicodeWidthStr::width(val.as_str());
+                let pad = if w >= display_width {
+                    w - display_width
+                } else {
+                    0
+                };
+                out.push(' ');
+                out.push_str(val);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" |");
+            }
+            out.push('\n');
+        }
+
+        out.push_str(&separator());
+        out.push_str(&format!(
+            "Rows: {}  Execution Time: {:.1} ms",
+            result.rows.len(),
+            result.execution_time_ms
+        ));
+
+        out
+    }
+
+    /// Column mode - aligned columns without borders
+    fn render_column(result: &QueryResult, headers: bool, nullvalue: &str) -> String {
+        let widths = Self::column_widths(result, nullvalue);
+        let mut out = String::new();
+
+        if headers {
+            for (i, col) in result.columns.iter().enumerate() {
+                let pad = widths[i] - UnicodeWidthStr::width(col.as_str());
+                out.push_str(col);
+                out.push_str(&" ".repeat(pad + 2));
+            }
+            out.push('\n');
+
+            for (i, w) in widths.iter().enumerate() {
+                out.push_str(&"-".repeat(*w));
+                if i < widths.len() - 1 {
+                    out.push_str("  ");
+                }
+            }
+            out.push('\n');
+        }
+
+        for row in &result.rows {
+            for (i, val) in row.iter().enumerate() {
+                let w = if i < widths.len() { widths[i] } else { 0 };
+                let display_width = UnicodeWidthStr::width(val.as_str());
+                let pad = if w >= display_width {
+                    w - display_width
+                } else {
+                    0
+                };
+                out.push_str(val);
+                out.push_str(&" ".repeat(pad + 2));
+            }
+            out.push('\n');
+        }
+
+        out.push_str(&format!(
+            "Rows: {}  Execution Time: {:.1} ms",
+            result.rows.len(),
+            result.execution_time_ms
+        ));
+
+        out
+    }
+
+    /// Markdown mode
+    fn render_markdown(result: &QueryResult, headers: bool, nullvalue: &str) -> String {
+        let widths = Self::column_widths(result, nullvalue);
+        let mut out = String::new();
+
+        if headers {
+            out.push('|');
+            for (i, col) in result.columns.iter().enumerate() {
+                let pad = widths[i] - UnicodeWidthStr::width(col.as_str());
+                out.push(' ');
+                out.push_str(col);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" |");
+            }
+            out.push('\n');
+
+            out.push('|');
+            for w in &widths {
+                out.push(' ');
+                out.push_str(&"-".repeat(*w));
+                out.push_str(" |");
+            }
+            out.push('\n');
+        }
+
+        for row in &result.rows {
+            out.push('|');
+            for (i, val) in row.iter().enumerate() {
+                let w = if i < widths.len() { widths[i] } else { 0 };
+                let display_width = UnicodeWidthStr::width(val.as_str());
+                let pad = if w >= display_width {
+                    w - display_width
+                } else {
+                    0
+                };
+                out.push(' ');
+                out.push_str(val);
+                out.push_str(&" ".repeat(pad));
+                out.push_str(" |");
+            }
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// CSV mode
+    fn render_csv(result: &QueryResult, headers: bool) -> String {
+        let mut out = String::new();
+
+        if headers {
+            out.push_str(&result.columns.join(","));
+            out.push('\n');
+        }
+
+        for row in &result.rows {
+            let escaped: Vec<String> = row
+                .iter()
+                .map(|v| {
+                    if v.contains(',') || v.contains('"') || v.contains('\n') {
+                        format!("\"{}\"", v.replace('"', "\"\""))
+                    } else {
+                        v.clone()
+                    }
+                })
+                .collect();
+            out.push_str(&escaped.join(","));
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// JSON mode
+    fn render_json(result: &QueryResult) -> String {
+        let mut out = String::from("[\n");
+
+        for (row_idx, row) in result.rows.iter().enumerate() {
+            out.push_str("  {");
+            for (i, val) in row.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let col = &result.columns[i];
+                // Try to detect numbers
+                if val.is_empty() {
+                    out.push_str(&format!("\"{}\": null", col));
+                } else if let Ok(n) = val.parse::<i64>() {
+                    out.push_str(&format!("\"{}\": {}", col, n));
+                } else if let Ok(f) = val.parse::<f64>() {
+                    out.push_str(&format!("\"{}\": {}", col, f));
+                } else {
+                    let escaped = val
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                        .replace('\t', "\\t");
+                    out.push_str(&format!("\"{}\": \"{}\"", col, escaped));
+                }
+            }
+            out.push('}');
+            if row_idx < result.rows.len() - 1 {
+                out.push(',');
+            }
+            out.push('\n');
+        }
+
+        out.push(']');
+        out
+    }
+
+    /// List mode - pipe separated
+    fn render_list(result: &QueryResult, headers: bool) -> String {
+        let mut out = String::new();
+
+        if headers {
+            out.push_str(&result.columns.join("|"));
+            out.push('\n');
+        }
+
+        for row in &result.rows {
+            out.push_str(&row.join("|"));
+            out.push('\n');
+        }
+
+        out
+    }
+}
+-e 
+
+---FILE: ./app/mod.rs ---
+
+pub use crate::config::Config;
+pub use crate::database::Database;
+
+/// Application state holder
+pub struct App {
+    pub config: Config,
+    pub db: Database,
+}
+
+impl App {
+    /// Create a new application instance
+    pub fn new(db_path: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+        let config = Config::load();
+
+        let db = match db_path {
+            Some(path) => Database::open(path)
+                .map_err(|e| format!("Failed to open database '{}': {}", path, e))?,
+            None => Database::open_in_memory()
+                .map_err(|e| format!("Failed to create in-memory database: {}", e))?,
+        };
+
+        Ok(Self { config, db })
+    }
+
+    /// Run the application
+    pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        crate::shell::run(self.db, self.config)
+    }
+}
+-e 
+
+---FILE: ./explorer/mod.rs ---
+
+use crate::config::ExplorerConfig;
+use crate::database::Database;
+use std::collections::HashMap;
+
+/// Database explorer panel data
+pub struct Explorer {
+    pub tables: Vec<String>,
+    pub views: Vec<String>,
+    pub indices: Vec<String>,
+    /// Column info per table: (column_name, column_type)
+    pub table_columns: HashMap<String, Vec<(String, String)>>,
+    /// Row counts per table (optional)
+    pub table_row_counts: HashMap<String, usize>,
+    pub visible: bool,
+    pub config: ExplorerConfig,
+}
+
+impl Explorer {
+    pub fn new() -> Self {
+        Self {
+            tables: Vec::new(),
+            views: Vec::new(),
+            indices: Vec::new(),
+            table_columns: HashMap::new(),
+            table_row_counts: HashMap::new(),
+            visible: false,
+            config: ExplorerConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: &ExplorerConfig) -> Self {
+        Self {
+            tables: Vec::new(),
+            views: Vec::new(),
+            indices: Vec::new(),
+            table_columns: HashMap::new(),
+            table_row_counts: HashMap::new(),
+            visible: false,
+            config: config.clone(),
+        }
+    }
+
+    /// Refresh the explorer data from the database
+    pub fn refresh(&mut self, db: &Database) {
+        self.tables = db.get_tables();
+        self.views = db.get_views();
+        self.indices = db.get_indices();
+
+        self.table_columns.clear();
+        self.table_row_counts.clear();
+
+        for table in &self.tables {
+            if self.config.show_columns {
+                let cols = db.get_column_info(table);
+                self.table_columns.insert(table.clone(), cols);
+            }
+            if self.config.show_row_counts {
+                if let Some(count) = db.get_row_count(table) {
+                    self.table_row_counts.insert(table.clone(), count);
+                }
+            }
+        }
+    }
+
+    /// Toggle visibility
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+    }
+
+    /// Render the explorer panel as a string
+    pub fn render(&self) -> String {
+        let w = self.config.panel_width;
+        // Inner width is panel_width minus the two border chars ("║" on each side)
+        let inner = w.saturating_sub(2);
+        let mut out = String::new();
+
+        // Newline before the panel for visual separation
+        out.push('\n');
+
+        // Top border
+        out.push('╔');
+        out.push_str(&"═".repeat(inner));
+        out.push_str("╗\n");
+
+        // Title
+        let title = "Database Explorer";
+        let title_pad = inner.saturating_sub(title.len());
+        let title_left = title_pad / 2;
+        let title_right = title_pad - title_left;
+        out.push_str(&format!(
+            "║{}{}{}║\n",
+            " ".repeat(title_left),
+            title,
+            " ".repeat(title_right),
+        ));
+
+        // Separator
+        out.push('╠');
+        out.push_str(&"═".repeat(inner));
+        out.push_str("╣\n");
+
+        if self.tables.is_empty() && self.views.is_empty() && self.indices.is_empty() {
+            let msg = "(empty database)";
+            let pad = inner.saturating_sub(msg.len() + 2);
+            out.push_str(&format!("║  {}{}║\n", msg, " ".repeat(pad)));
+        }
+
+        // Tables section
+        if !self.tables.is_empty() {
+            let section = "Tables";
+            let pad = inner.saturating_sub(section.len() + 2);
+            out.push_str(&format!("║  {}{}║\n", section, " ".repeat(pad)));
+
+            for (i, table) in self.tables.iter().enumerate() {
+                let is_last =
+                    i == self.tables.len() - 1 && self.views.is_empty() && self.indices.is_empty();
+                let connector = if is_last && !self.config.show_columns {
+                    "└── "
+                } else {
+                    "├── "
+                };
+
+                // Format table name with optional row count
+                let table_display = if self.config.show_row_counts {
+                    if let Some(count) = self.table_row_counts.get(table) {
+                        format!("{} ({})", table, count)
+                    } else {
+                        table.clone()
+                    }
+                } else {
+                    table.clone()
+                };
+
+                let prefix = format!("{}{}", connector, table_display);
+                let pad = inner.saturating_sub(prefix.len() + 2);
+                out.push_str(&format!("║  {}{}║\n", prefix, " ".repeat(pad)));
+
+                // Show columns under this table
+                if self.config.show_columns {
+                    if let Some(columns) = self.table_columns.get(table) {
+                        for (ci, (col_name, col_type)) in columns.iter().enumerate() {
+                            let is_last_col = ci == columns.len() - 1;
+                            let tree_prefix = if is_last && !self.config.show_columns {
+                                "    "
+                            } else {
+                                "│   "
+                            };
+                            let col_connector = if is_last_col { "└─" } else { "├─" };
+
+                            let col_display =
+                                if self.config.show_column_types && !col_type.is_empty() {
+                                    format!("{} {}", col_name, col_type)
+                                } else {
+                                    col_name.clone()
+                                };
+
+                            let prefix =
+                                format!("{}{} {}", tree_prefix, col_connector, col_display);
+                            let pad = inner.saturating_sub(prefix.len() + 2);
+                            // Dim color for column lines
+                            out.push_str(&format!(
+                                "║  \x1b[90m{}\x1b[0m{}║\n",
+                                prefix,
+                                " ".repeat(pad)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Views section
+        if !self.views.is_empty() {
+            // Blank separator line
+            let pad = inner;
+            out.push_str(&format!("║{}║\n", " ".repeat(pad)));
+
+            let section = "Views";
+            let pad = inner.saturating_sub(section.len() + 2);
+            out.push_str(&format!("║  {}{}║\n", section, " ".repeat(pad)));
+
+            for (i, view) in self.views.iter().enumerate() {
+                let is_last = i == self.views.len() - 1 && self.indices.is_empty();
+                let connector = if is_last { "└── " } else { "├── " };
+                let prefix = format!("{}{}", connector, view);
+                let pad = inner.saturating_sub(prefix.len() + 2);
+                out.push_str(&format!("║  {}{}║\n", prefix, " ".repeat(pad)));
+            }
+        }
+
+        // Indexes section
+        if !self.indices.is_empty() {
+            let pad = inner;
+            out.push_str(&format!("║{}║\n", " ".repeat(pad)));
+
+            let section = "Indexes";
+            let pad = inner.saturating_sub(section.len() + 2);
+            out.push_str(&format!("║  {}{}║\n", section, " ".repeat(pad)));
+
+            for (i, idx) in self.indices.iter().enumerate() {
+                let is_last = i == self.indices.len() - 1;
+                let connector = if is_last { "└── " } else { "├── " };
+                let prefix = format!("{}{}", connector, idx);
+                let pad = inner.saturating_sub(prefix.len() + 2);
+                out.push_str(&format!("║  {}{}║\n", prefix, " ".repeat(pad)));
+            }
+        }
+
+        // Bottom border
+        out.push('╚');
+        out.push_str(&"═".repeat(inner));
+        out.push_str("╝\n");
+        out
+    }
+}
+-e 
+
+---FILE: ./database/mod.rs ---
+
+use rusqlite::{types::Value, Connection, Result as SqliteResult};
+use std::path::Path;
+use std::time::Instant;
+
+/// Result of executing a SQL query
+#[derive(Debug)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub rows_affected: usize,
+    pub execution_time_ms: f64,
+    pub is_select: bool,
+}
+
+/// Database connection wrapper
+pub struct Database {
+    conn: Connection,
+    pub path: String,
+    pub nullvalue: String,
+}
+
+impl Database {
+    /// Open a database file (creates if it doesn't exist)
+    pub fn open<P: AsRef<Path>>(path: P) -> SqliteResult<Self> {
+        let path_str = path.as_ref().to_string_lossy().to_string();
+        let conn = Connection::open(&path)?;
+        // Enable WAL mode for better concurrent access
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        Ok(Self {
+            conn,
+            path: path_str,
+            nullvalue: String::new(),
+        })
+    }
+
+    /// Open an in-memory database
+    pub fn open_in_memory() -> SqliteResult<Self> {
+        let conn = Connection::open_in_memory()?;
+        Ok(Self {
+            conn,
+            path: ":memory:".to_string(),
+            nullvalue: String::new(),
+        })
+    }
+
+    /// Execute a SQL query and return results
+    pub fn execute_query(&self, sql: &str) -> Result<QueryResult, String> {
+        let trimmed = sql.trim();
+        if trimmed.is_empty() {
+            return Err("Empty query".to_string());
+        }
+
+        let start = Instant::now();
+
+        // Determine if it's a SELECT-like query (returns rows)
+        let upper = trimmed.to_uppercase();
+        let is_select = upper.starts_with("SELECT")
+            || upper.starts_with("PRAGMA")
+            || upper.starts_with("EXPLAIN")
+            || upper.starts_with("WITH");
+
+        if is_select {
+            self.execute_select(trimmed, start)
+        } else {
+            self.execute_modify(trimmed, start)
+        }
+    }
+
+    /// Execute a SELECT query
+    fn execute_select(&self, sql: &str, start: Instant) -> Result<QueryResult, String> {
+        let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
+
+        let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+
+        let rows: Vec<Vec<String>> = stmt
+            .query_map([], |row| {
+                let mut values = Vec::new();
+                for i in 0..columns.len() {
+                    let val: Value = row.get_unwrap(i);
+                    let s = match val {
+                        Value::Null => self.nullvalue.clone(),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Real(f) => f.to_string(),
+                        Value::Text(s) => s,
+                        Value::Blob(b) => format!("X'{}'", hex_encode(&b)),
+                    };
+                    values.push(s);
+                }
+                Ok(values)
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let elapsed = start.elapsed();
+        Ok(QueryResult {
+            rows_affected: rows.len(),
+            columns,
+            rows,
+            execution_time_ms: elapsed.as_secs_f64() * 1000.0,
+            is_select: true,
+        })
+    }
+
+    /// Execute a non-SELECT query (INSERT, UPDATE, DELETE, etc.)
+    fn execute_modify(&self, sql: &str, start: Instant) -> Result<QueryResult, String> {
+        let rows_affected = self
+            .conn
+            .execute_batch(sql)
+            .map_err(|e| e.to_string())
+            .map(|_| self.conn.changes())?;
+
+        let elapsed = start.elapsed();
+        Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            rows_affected: rows_affected as usize,
+            execution_time_ms: elapsed.as_secs_f64() * 1000.0,
+            is_select: false,
+        })
+    }
+
+    /// Get all table names
+    pub fn get_tables(&self) -> Vec<String> {
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+        self.conn
+            .prepare(sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all view names
+    pub fn get_views(&self) -> Vec<String> {
+        let sql = "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name";
+        self.conn
+            .prepare(sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all index names
+    pub fn get_indices(&self) -> Vec<String> {
+        let sql = "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+        self.conn
+            .prepare(sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get columns for a table
+    pub fn get_columns(&self, table: &str) -> Vec<String> {
+        let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
+        self.conn
+            .prepare(&sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get columns with their types for a table (name, type)
+    pub fn get_column_info(&self, table: &str) -> Vec<(String, String)> {
+        let sql = format!("PRAGMA table_info(\"{}\")", table.replace('"', "\"\""));
+        self.conn
+            .prepare(&sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| {
+                    let name: String = row.get(1)?;
+                    let col_type: String = row.get(2)?;
+                    Ok((name, col_type))
+                })
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get the row count for a table
+    pub fn get_row_count(&self, table: &str) -> Option<usize> {
+        let sql = format!("SELECT COUNT(*) FROM \"{}\"", table.replace('"', "\"\""));
+        self.conn
+            .query_row(&sql, [], |row| row.get::<_, i64>(0))
+            .ok()
+            .map(|c| c as usize)
+    }
+
+    /// Get the CREATE statement for a database object
+    pub fn get_schema(&self, name: &str) -> Option<String> {
+        let sql = "SELECT sql FROM sqlite_master WHERE name = ?1";
+        self.conn.query_row(sql, [name], |row| row.get(0)).ok()
+    }
+
+    /// Get all schema CREATE statements
+    pub fn get_all_schemas(&self) -> Vec<String> {
+        let sql = "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name";
+        self.conn
+            .prepare(sql)
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get the full dump of the database (schema + data)
+    pub fn dump(&self) -> Result<String, String> {
+        let mut output = String::new();
+        output.push_str("BEGIN TRANSACTION;\n");
+
+        // Schemas
+        for schema in self.get_all_schemas() {
+            output.push_str(&schema);
+            output.push_str(";\n");
+        }
+
+        // Data for each table
+        for table in self.get_tables() {
+            let sql = format!("SELECT * FROM \"{}\"", table.replace('"', "\"\""));
+            if let Ok(result) = self.execute_query(&sql) {
+                for row in &result.rows {
+                    let values: Vec<String> = row
+                        .iter()
+                        .map(|v| {
+                            if v.is_empty() {
+                                "NULL".to_string()
+                            } else if v.parse::<f64>().is_ok() {
+                                v.clone()
+                            } else {
+                                format!("'{}'", v.replace('\'', "''"))
+                            }
+                        })
+                        .collect();
+                    output.push_str(&format!(
+                        "INSERT INTO \"{}\" VALUES({});\n",
+                        table.replace('"', "\"\""),
+                        values.join(",")
+                    ));
+                }
+            }
+        }
+
+        output.push_str("COMMIT;\n");
+        Ok(output)
+    }
+
+    /// Execute a SQL script file
+    pub fn execute_script(&self, sql: &str) -> Result<(), String> {
+        self.conn.execute_batch(sql).map_err(|e| e.to_string())
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02X}", b)).collect()
+}
+-e 
+
+---FILE: ./completion/mod.rs ---
+
+use reedline::{Completer, Span, Suggestion};
+use std::collections::HashMap;
+
+use crate::config::CompletionConfig;
+
+/// SQL and dot-command autocompletion engine
+pub struct SqlCompleter {
+    /// Dot commands
+    dot_commands: Vec<String>,
+    /// Table names (refreshed from database)
+    tables: Vec<String>,
+    /// View names
+    views: Vec<String>,
+    /// All column names (flat, for unqualified completion)
+    all_columns: Vec<String>,
+    /// Columns per table (for qualified "table"."col" completion)
+    table_columns: HashMap<String, Vec<String>>,
+    /// Index names
+    indices: Vec<String>,
+    /// Completion configuration
+    config: CompletionConfig,
+}
+
+// ── Keyword categories ──────────────────────────────────────────────────────
+
+/// Keywords valid in expressions (after SELECT, WHERE, ON, HAVING, etc.)
+const EXPR_KEYWORDS: &[&str] = &[
+    "ALL",
+    "AND",
+    "AS",
+    "ASC",
+    "BETWEEN",
+    "CASE",
+    "CAST",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "DESC",
+    "DISTINCT",
+    "ELSE",
+    "END",
+    "ESCAPE",
+    "EXCEPT",
+    "EXISTS",
+    "FILTER",
+    "GLOB",
+    "IN",
+    "IS",
+    "ISNULL",
+    "LIKE",
+    "LIMIT",
+    "MATCH",
+    "NOT",
+    "NOTNULL",
+    "NULL",
+    "NULLS",
+    "OFFSET",
+    "OR",
+    "ORDER",
+    "OVER",
+    "REGEXP",
+    "THEN",
+    "UNION",
+    "WHEN",
+    "WINDOW",
+    // Functions
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "TOTAL",
+    "GROUP_CONCAT",
+    "ABS",
+    "CHANGES",
+    "COALESCE",
+    "IFNULL",
+    "IIF",
+    "INSTR",
+    "HEX",
+    "LENGTH",
+    "LIKELY",
+    "LOAD_EXTENSION",
+    "LOWER",
+    "LTRIM",
+    "NULLIF",
+    "PRINTF",
+    "QUOTE",
+    "RANDOM",
+    "RANDOMBLOB",
+    "REPLACE",
+    "ROUND",
+    "RTRIM",
+    "SOUNDEX",
+    "SQLITE_VERSION",
+    "SUBSTR",
+    "SUBSTRING",
+    "TOTAL_CHANGES",
+    "TRIM",
+    "TYPEOF",
+    "UNICODE",
+    "UNLIKELY",
+    "UPPER",
+    "ZEROBLOB",
+    "DATE",
+    "TIME",
+    "DATETIME",
+    "JULIANDAY",
+    "STRFTIME",
+    "UNIXEPOCH",
+    // Types (for CAST)
+    "INTEGER",
+    "REAL",
+    "TEXT",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
+];
+
+/// Keywords valid after a table/value (clause-level transitions)
+const CLAUSE_KEYWORDS: &[&str] = &[
+    "AND",
+    "AS",
+    "ASC",
+    "BY",
+    "CROSS",
+    "DESC",
+    "EXCEPT",
+    "FROM",
+    "FULL",
+    "GROUP",
+    "HAVING",
+    "INNER",
+    "INTERSECT",
+    "JOIN",
+    "LEFT",
+    "LIMIT",
+    "NATURAL",
+    "OFFSET",
+    "ON",
+    "OR",
+    "ORDER",
+    "OUTER",
+    "RETURNING",
+    "RIGHT",
+    "UNION",
+    "USING",
+    "WHERE",
+];
+
+/// Keywords to start a new statement (when nothing or general context)
+const STMT_KEYWORDS: &[&str] = &[
+    "ALTER",
+    "ANALYZE",
+    "ATTACH",
+    "BEGIN",
+    "COMMIT",
+    "CREATE",
+    "DELETE",
+    "DETACH",
+    "DROP",
+    "EXPLAIN",
+    "INSERT",
+    "PRAGMA",
+    "REINDEX",
+    "RELEASE",
+    "REPLACE",
+    "ROLLBACK",
+    "SAVEPOINT",
+    "SELECT",
+    "UPDATE",
+    "VACUUM",
+    "WITH",
+];
+
+/// DDL-specific keywords (after CREATE/ALTER/DROP)
+const DDL_KEYWORDS: &[&str] = &[
+    "TABLE",
+    "INDEX",
+    "VIEW",
+    "TRIGGER",
+    "VIRTUAL",
+    "TEMP",
+    "TEMPORARY",
+    "IF",
+    "EXISTS",
+    "NOT",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "UNIQUE",
+    "CHECK",
+    "DEFAULT",
+    "AUTOINCREMENT",
+    "CONSTRAINT",
+    "CONFLICT",
+    "CASCADE",
+    "RESTRICT",
+    "NO",
+    "ACTION",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "COLLATE",
+    "DEFERRABLE",
+    "INITIALLY",
+    "DEFERRED",
+    "IMMEDIATE",
+    "COLUMN",
+    "RENAME",
+    "ADD",
+    "GENERATED",
+    "ALWAYS",
+    "NULL",
+    "INTEGER",
+    "REAL",
+    "TEXT",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
+    "EXCLUSIVE",
+    "WITHOUT",
+];
+
+/// Column constraint keywords (inside CREATE TABLE parentheses)
+const COLUMN_DEF_KEYWORDS: &[&str] = &[
+    "PRIMARY",
+    "KEY",
+    "NOT",
+    "NULL",
+    "UNIQUE",
+    "CHECK",
+    "DEFAULT",
+    "AUTOINCREMENT",
+    "REFERENCES",
+    "COLLATE",
+    "CONSTRAINT",
+    "FOREIGN",
+    "ON",
+    "DELETE",
+    "UPDATE",
+    "CASCADE",
+    "RESTRICT",
+    "SET",
+    "NO",
+    "ACTION",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "REPLACE",
+    "DEFERRABLE",
+    "INITIALLY",
+    "DEFERRED",
+    "IMMEDIATE",
+    "GENERATED",
+    "ALWAYS",
+    "AS",
+    "STORED",
+    "VIRTUAL",
+    // Data types
+    "INTEGER",
+    "TEXT",
+    "REAL",
+    "BLOB",
+    "NUMERIC",
+    "BOOLEAN",
+    "VARCHAR",
+    "CHAR",
+    "INT",
+    "BIGINT",
+    "SMALLINT",
+    "TINYINT",
+    "FLOAT",
+    "DOUBLE",
+    "DECIMAL",
+    "DATE",
+    "DATETIME",
+    "TIMESTAMP",
+];
+
+/// INSERT-specific keywords
+const INSERT_KEYWORDS: &[&str] = &[
+    "INTO",
+    "VALUES",
+    "DEFAULT",
+    "SELECT",
+    "OR",
+    "REPLACE",
+    "ABORT",
+    "FAIL",
+    "IGNORE",
+    "ROLLBACK",
+    "ON",
+    "CONFLICT",
+    "DO",
+    "NOTHING",
+    "UPDATE",
+    "SET",
+    "WHERE",
+    "RETURNING",
+];
+
+/// Which keyword set to use
+#[derive(Clone, Copy)]
+enum KeywordScope {
+    /// After SELECT, WHERE, ON, HAVING — expression keywords
+    Expression,
+    /// After a table/identifier — clause transition keywords
+    Clause,
+    /// Start of statement or general — statement + clause + expression
+    General,
+    /// After CREATE/ALTER/DROP — DDL keywords
+    Ddl,
+    /// Inside column definitions (CREATE TABLE body)
+    ColumnDef,
+    /// After INSERT
+    Insert,
+    /// No keywords (e.g. directly after FROM/JOIN)
+    None,
+}
+
+/// What types of completions are allowed in this context
+struct CompletionContext {
+    keyword_scope: KeywordScope,
+    allow_tables: bool,
+    allow_columns: bool,
+    allow_indices: bool,
+    /// Allow suggestions even when the current word is empty
+    eager: bool,
+}
+
+impl SqlCompleter {
+    pub fn new() -> Self {
+        Self {
+            dot_commands: Self::dot_command_list(),
+            tables: Vec::new(),
+            views: Vec::new(),
+            all_columns: Vec::new(),
+            table_columns: HashMap::new(),
+            indices: Vec::new(),
+            config: CompletionConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: &CompletionConfig) -> Self {
+        Self {
+            dot_commands: Self::dot_command_list(),
+            tables: Vec::new(),
+            views: Vec::new(),
+            all_columns: Vec::new(),
+            table_columns: HashMap::new(),
+            indices: Vec::new(),
+            config: config.clone(),
+        }
+    }
+
+    /// Update schema information from the database
+    pub fn update_schema(
+        &mut self,
+        tables: Vec<String>,
+        views: Vec<String>,
+        all_columns: Vec<String>,
+        table_columns: HashMap<String, Vec<String>>,
+        indices: Vec<String>,
+    ) {
+        self.tables = tables;
+        self.views = views;
+        self.all_columns = all_columns;
+        self.table_columns = table_columns;
+        self.indices = indices;
+    }
+
+    fn dot_command_list() -> Vec<String> {
+        vec![
+            ".help",
+            ".quit",
+            ".exit",
+            ".tables",
+            ".schema",
+            ".indices",
+            ".mode",
+            ".headers",
+            ".read",
+            ".output",
+            ".dump",
+            ".nullvalue",
+            ".show",
+            ".preview",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    /// Get the keyword list for the given scope
+    fn keywords_for_scope(scope: KeywordScope) -> Vec<&'static str> {
+        match scope {
+            KeywordScope::Expression => EXPR_KEYWORDS.to_vec(),
+            KeywordScope::Clause => CLAUSE_KEYWORDS.to_vec(),
+            KeywordScope::Ddl => DDL_KEYWORDS.to_vec(),
+            KeywordScope::ColumnDef => COLUMN_DEF_KEYWORDS.to_vec(),
+            KeywordScope::Insert => INSERT_KEYWORDS.to_vec(),
+            KeywordScope::General => {
+                let mut all = Vec::new();
+                all.extend_from_slice(STMT_KEYWORDS);
+                all.extend_from_slice(CLAUSE_KEYWORDS);
+                all.extend_from_slice(EXPR_KEYWORDS);
+                // Deduplicate
+                all.sort_unstable();
+                all.dedup();
+                all
+            }
+            KeywordScope::None => Vec::new(),
+        }
+    }
+
+    /// Try to detect a "table"."col" pattern and return table-qualified column suggestions.
+    fn try_qualified_completion(
+        &self,
+        line_to_cursor: &str,
+        pos: usize,
+    ) -> Option<Vec<Suggestion>> {
+        let before = line_to_cursor;
+        let dot_pos = before.rfind('.')?;
+        let after_dot = &before[dot_pos + 1..];
+
+        let (col_prefix, col_has_quote) = if after_dot.starts_with('"') {
+            (&after_dot[1..], true)
+        } else {
+            (after_dot, false)
+        };
+
+        let before_dot = &before[..dot_pos];
+        if !before_dot.ends_with('"') {
+            let alias_start = before_dot
+                .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let alias = &before_dot[alias_start..];
+            if alias.is_empty() {
+                return None;
+            }
+
+            let span_start = dot_pos + 1;
+            let alias_lower = alias.to_lowercase();
+            for (table_name, cols) in &self.table_columns {
+                if table_name.to_lowercase() == alias_lower {
+                    return Some(self.build_column_suggestions(
+                        cols,
+                        col_prefix,
+                        span_start,
+                        pos,
+                        col_has_quote,
+                    ));
+                }
+            }
+            return Some(self.build_column_suggestions(
+                &self.all_columns,
+                col_prefix,
+                span_start,
+                pos,
+                col_has_quote,
+            ));
+        }
+
+        let table_end = before_dot.len() - 1;
+        let table_start = before_dot[..table_end].rfind('"')?;
+        let table_name = &before_dot[table_start + 1..table_end];
+        let span_start = dot_pos + 1;
+        let cols = self.table_columns.get(table_name)?;
+
+        Some(self.build_column_suggestions(cols, col_prefix, span_start, pos, col_has_quote))
+    }
+
+    fn build_column_suggestions(
+        &self,
+        columns: &[String],
+        col_prefix: &str,
+        span_start: usize,
+        pos: usize,
+        _has_leading_quote: bool,
+    ) -> Vec<Suggestion> {
+        let lower_prefix = col_prefix.to_lowercase();
+        let quote = self.config.quote_identifiers;
+        columns
+            .iter()
+            .filter(|col| col_prefix.is_empty() || col.to_lowercase().starts_with(&lower_prefix))
+            .map(|col| Suggestion {
+                value: if quote {
+                    format!("\"{}\"", col)
+                } else {
+                    col.clone()
+                },
+                description: Some("column".to_string()),
+                style: None,
+                extra: None,
+                span: Span::new(span_start, pos),
+                append_whitespace: true,
+            })
+            .collect()
+    }
+
+    /// Check if we are inside CREATE TABLE parentheses
+    fn is_inside_create_table_body(line_to_cursor: &str) -> bool {
+        let upper = line_to_cursor.to_uppercase();
+        // Find the last CREATE TABLE, then check if we have an unmatched open paren
+        if let Some(ct_pos) = upper.rfind("CREATE TABLE") {
+            let after_ct = &line_to_cursor[ct_pos..];
+            let open_parens = after_ct.matches('(').count();
+            let close_parens = after_ct.matches(')').count();
+            return open_parens > close_parens;
+        }
+        // Also handle CREATE TEMP TABLE, CREATE TEMPORARY TABLE
+        if let Some(ct_pos) = upper
+            .rfind("CREATE TEMP TABLE")
+            .or_else(|| upper.rfind("CREATE TEMPORARY TABLE"))
+        {
+            let after_ct = &line_to_cursor[ct_pos..];
+            let open_parens = after_ct.matches('(').count();
+            let close_parens = after_ct.matches(')').count();
+            return open_parens > close_parens;
+        }
+        false
+    }
+
+    /// Detect the SQL context by looking at the keyword preceding the cursor
+    fn detect_context(line_to_cursor: &str, word_start: usize) -> CompletionContext {
+        // Inside CREATE TABLE body: suggest column definition keywords / data types
+        if Self::is_inside_create_table_body(line_to_cursor) {
+            return CompletionContext {
+                keyword_scope: KeywordScope::ColumnDef,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            };
+        }
+
+        let before = line_to_cursor[..word_start].trim_end();
+        let before = before.strip_suffix(',').unwrap_or(before).trim_end();
+        let prev_keyword = Self::find_prev_keyword(before);
+
+        match prev_keyword.as_deref() {
+            // After FROM/JOIN variants: only tables and views
+            Some("FROM") | Some("JOIN") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After INTO: tables (for INSERT INTO)
+            Some("INTO") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After TABLE: tables (for DROP TABLE, ALTER TABLE) + DDL keywords
+            Some("TABLE") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After UPDATE: tables
+            Some("UPDATE") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After DELETE: suggest FROM
+            Some("DELETE") => CompletionContext {
+                keyword_scope: KeywordScope::Clause,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After INSERT: suggest INTO, OR
+            Some("INSERT") => CompletionContext {
+                keyword_scope: KeywordScope::Insert,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After SELECT: expression keywords + columns + tables
+            Some("SELECT") | Some("HAVING") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: true,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After WHERE/ON/AND/OR/operators: expression keywords + columns
+            Some("WHERE") | Some("ON") | Some("SET") | Some("AND") | Some("OR")
+            | Some("BETWEEN") | Some("CASE") | Some("WHEN") | Some("THEN") | Some("ELSE")
+            | Some("LIKE") | Some("IN") | Some("VALUES") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: true,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After CREATE/ALTER/DROP: DDL keywords
+            Some("CREATE") | Some("ALTER") | Some("DROP") => CompletionContext {
+                keyword_scope: KeywordScope::Ddl,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After INDEX: indices or tables (for CREATE INDEX ... ON <table>)
+            Some("INDEX") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: true,
+                eager: true,
+            },
+            // After ORDER/GROUP: suggest BY, then columns
+            Some("ORDER") | Some("GROUP") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: false,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After BY: columns (ORDER BY x, GROUP BY x)
+            Some("BY") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: true,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After LIMIT/OFFSET: expression keywords + columns
+            Some("LIMIT") | Some("OFFSET") => CompletionContext {
+                keyword_scope: KeywordScope::Expression,
+                allow_tables: false,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // After join modifiers: suggest JOIN + tables
+            Some("INNER") | Some("LEFT") | Some("RIGHT") | Some("CROSS") | Some("NATURAL")
+            | Some("OUTER") | Some("FULL") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After AS: no suggestions (user defines alias)
+            Some("AS") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            },
+            // After PRAGMA: no tables/columns, just let user type
+            Some("PRAGMA") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: false,
+            },
+            // After IF: suggest EXISTS/NOT (for CREATE TABLE IF NOT EXISTS)
+            Some("IF") => CompletionContext {
+                keyword_scope: KeywordScope::Ddl,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After EXISTS/NOT: suggest table names (CREATE TABLE IF NOT EXISTS <name>)
+            Some("EXISTS") => CompletionContext {
+                keyword_scope: KeywordScope::None,
+                allow_tables: true,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After ADD: suggest COLUMN (ALTER TABLE x ADD COLUMN)
+            Some("ADD") => CompletionContext {
+                keyword_scope: KeywordScope::ColumnDef,
+                allow_tables: false,
+                allow_columns: false,
+                allow_indices: false,
+                eager: true,
+            },
+            // After RENAME: suggest TO, COLUMN
+            Some("RENAME") => CompletionContext {
+                keyword_scope: KeywordScope::Ddl,
+                allow_tables: false,
+                allow_columns: true,
+                allow_indices: false,
+                eager: true,
+            },
+            // No previous keyword: at start of statement
+            None => {
+                // Check if the line is truly empty or at start
+                let all_before = line_to_cursor[..word_start].trim();
+                if all_before.is_empty() {
+                    // Beginning of a new statement
+                    CompletionContext {
+                        keyword_scope: KeywordScope::General,
+                        allow_tables: false,
+                        allow_columns: false,
+                        allow_indices: false,
+                        eager: false,
+                    }
+                } else {
+                    // After a non-keyword token (table name, column, etc.) — clause transitions
+                    CompletionContext {
+                        keyword_scope: KeywordScope::Clause,
+                        allow_tables: true,
+                        allow_columns: true,
+                        allow_indices: false,
+                        eager: false,
+                    }
+                }
+            }
+            // Default: general (statement starters + clause + expression)
+            _ => CompletionContext {
+                keyword_scope: KeywordScope::Clause,
+                allow_tables: true,
+                allow_columns: true,
+                allow_indices: false,
+                eager: false,
+            },
+        }
+    }
+
+    /// Check the immediately preceding token. If it's a SQL keyword, return it.
+    /// If it's a quoted identifier or non-keyword, return None (general context).
+    fn find_prev_keyword(text: &str) -> Option<String> {
+        let text = text.trim_end();
+        if text.is_empty() {
+            return None;
+        }
+
+        let bytes = text.as_bytes();
+        let mut i = bytes.len();
+
+        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return None;
+        }
+
+        let last = bytes[i - 1];
+
+        // Quoted identifier → general context
+        if last == b'"' {
+            return None;
+        }
+        // Closing paren → general context
+        if last == b')' {
+            return None;
+        }
+
+        // Extract the unquoted token
+        let end = i;
+        while i > 0
+            && !bytes[i - 1].is_ascii_whitespace()
+            && bytes[i - 1] != b'('
+            && bytes[i - 1] != b','
+            && bytes[i - 1] != b')'
+        {
+            i -= 1;
+        }
+        let token = &text[i..end];
+        let upper = token.to_uppercase();
+
+        let context_keywords = [
+            "SELECT", "FROM", "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "CROSS", "NATURAL",
+            "OUTER", "FULL", "ON", "INTO", "TABLE", "UPDATE", "SET", "HAVING", "BY", "INDEX",
+            "AND", "OR", "BETWEEN", "CASE", "WHEN", "THEN", "ELSE", "LIKE", "ORDER", "GROUP",
+            "DELETE", "INSERT", "VALUES", "CREATE", "ALTER", "DROP", "IN", "AS", "PRAGMA", "LIMIT",
+            "OFFSET", "IF", "EXISTS", "NOT", "ADD", "RENAME",
+        ];
+
+        if context_keywords.contains(&upper.as_str()) {
+            return Some(upper);
+        }
+
+        None
+    }
+}
+
+impl Completer for SqlCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        if !self.config.enabled {
+            return Vec::new();
+        }
+
+        let line_to_cursor = &line[..pos];
+
+        // Dot command completion
+        if line_to_cursor.trim_start().starts_with('.') {
+            let input = line_to_cursor.trim_start();
+            let start = pos - input.len();
+            return self
+                .dot_commands
+                .iter()
+                .filter(|cmd| cmd.starts_with(input))
+                .map(|cmd| Suggestion {
+                    value: cmd.clone(),
+                    description: None,
+                    style: None,
+                    extra: None,
+                    span: Span::new(start, pos),
+                    append_whitespace: true,
+                })
+                .collect();
+        }
+
+        // Try table-qualified column completion first: "table"."col" or alias.col
+        if let Some(suggestions) = self.try_qualified_completion(line_to_cursor, pos) {
+            if !suggestions.is_empty() {
+                return self.cap_suggestions(suggestions);
+            }
+        }
+
+        // Find the current word being typed
+        let word_start = line_to_cursor
+            .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        let raw_word = &line_to_cursor[word_start..];
+
+        // Check if the word starts with a double quote
+        let (has_leading_quote, current_word, span_start) = if raw_word.starts_with('"') {
+            (true, &raw_word[1..], word_start)
+        } else {
+            (false, raw_word, word_start)
+        };
+
+        // Determine SQL context
+        let context = Self::detect_context(line_to_cursor, word_start);
+
+        // If the word is empty and context is not eager, don't show suggestions
+        // (unless we're in an eager context like after FROM, SELECT, etc.)
+        if current_word.is_empty() && !has_leading_quote && !context.eager {
+            return Vec::new();
+        }
+
+        let upper_word = current_word.to_uppercase();
+        let lower_word = current_word.to_lowercase();
+        let mut suggestions = Vec::new();
+        let quote = self.config.quote_identifiers;
+
+        // Keywords (filtered by context scope)
+        if !has_leading_quote && self.config.suggest_keywords {
+            let keywords = Self::keywords_for_scope(context.keyword_scope);
+            for kw in keywords {
+                if current_word.is_empty() || kw.starts_with(&upper_word) {
+                    suggestions.push(Suggestion {
+                        value: kw.to_string(),
+                        description: Some("keyword".to_string()),
+                        style: None,
+                        extra: None,
+                        span: Span::new(span_start, pos),
+                        append_whitespace: true,
+                    });
+                }
+            }
+        }
+
+        // Table names
+        if context.allow_tables {
+            for table in &self.tables {
+                if current_word.is_empty() || table.to_lowercase().starts_with(&lower_word) {
+                    suggestions.push(Suggestion {
+                        value: if quote {
+                            format!("\"{}\"", table)
+                        } else {
+                            table.clone()
+                        },
+                        description: Some("table".to_string()),
+                        style: None,
+                        extra: None,
+                        span: Span::new(span_start, pos),
+                        append_whitespace: true,
+                    });
+                }
+            }
+
+            for view in &self.views {
+                if current_word.is_empty() || view.to_lowercase().starts_with(&lower_word) {
+                    suggestions.push(Suggestion {
+                        value: if quote {
+                            format!("\"{}\"", view)
+                        } else {
+                            view.clone()
+                        },
+                        description: Some("view".to_string()),
+                        style: None,
+                        extra: None,
+                        span: Span::new(span_start, pos),
+                        append_whitespace: true,
+                    });
+                }
+            }
+        }
+
+        // Column names
+        if context.allow_columns && self.config.suggest_columns {
+            for col in &self.all_columns {
+                if current_word.is_empty() || col.to_lowercase().starts_with(&lower_word) {
+                    suggestions.push(Suggestion {
+                        value: if quote {
+                            format!("\"{}\"", col)
+                        } else {
+                            col.clone()
+                        },
+                        description: Some("column".to_string()),
+                        style: None,
+                        extra: None,
+                        span: Span::new(span_start, pos),
+                        append_whitespace: true,
+                    });
+                }
+            }
+        }
+
+        // Index names
+        if context.allow_indices {
+            for idx in &self.indices {
+                if current_word.is_empty() || idx.to_lowercase().starts_with(&lower_word) {
+                    suggestions.push(Suggestion {
+                        value: if quote {
+                            format!("\"{}\"", idx)
+                        } else {
+                            idx.clone()
+                        },
+                        description: Some("index".to_string()),
+                        style: None,
+                        extra: None,
+                        span: Span::new(span_start, pos),
+                        append_whitespace: true,
+                    });
+                }
+            }
+        }
+
+        self.cap_suggestions(suggestions)
+    }
+}
+
+impl SqlCompleter {
+    /// Cap the number of suggestions to the configured maximum
+    fn cap_suggestions(&self, mut suggestions: Vec<Suggestion>) -> Vec<Suggestion> {
+        suggestions.truncate(self.config.max_suggestions);
+        suggestions
+    }
+}
+-e 
+
+---FILE: ./shell/prompt.rs ---
+
+use reedline::Prompt;
+use std::borrow::Cow;
+
+/// Custom prompt for SQLiteForge
+pub struct SqlPrompt {
+    pub db_name: String,
+}
+
+impl SqlPrompt {
+    pub fn new(db_name: &str) -> Self {
+        Self {
+            db_name: db_name.to_string(),
+        }
+    }
+}
+
+impl Prompt for SqlPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Owned(format!("{}> ", self.db_name))
+    }
+
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_indicator(&self, _prompt_mode: reedline::PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        let pad = self.db_name.len().saturating_sub(3);
+        Cow::Owned(format!("{}...> ", " ".repeat(pad)))
+    }
+
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: reedline::PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed("(search) ")
+    }
+}
+-e 
+
+---FILE: ./shell/highlighter.rs ---
+
+use nu_ansi_term::{Color, Style};
+use reedline::{Highlighter, StyledText};
+
+/// SQL syntax highlighter for the interactive shell
+pub struct SqlHighlighter;
+
+impl SqlHighlighter {
+    // SQL keywords to highlight — comprehensive SQLite keyword set
+    const KEYWORDS: &'static [&'static str] = &[
+        // Core DML
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "REPLACE",
+        "RETURNING",
+        "EXPLAIN",
+        "PRAGMA",
+        // DDL
+        "CREATE",
+        "TABLE",
+        "DROP",
+        "ALTER",
+        "INDEX",
+        "VIEW",
+        "TRIGGER",
+        "VIRTUAL",
+        "TEMP",
+        "TEMPORARY",
+        "IF",
+        "COLUMN",
+        "RENAME",
+        "ADD",
+        // Transactions
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "TRANSACTION",
+        "SAVEPOINT",
+        "RELEASE",
+        "DEFERRED",
+        "IMMEDIATE",
+        "EXCLUSIVE",
+        // Joins
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "CROSS",
+        "NATURAL",
+        "FULL",
+        "ON",
+        "USING",
+        // Logic / Operators
+        "AND",
+        "OR",
+        "NOT",
+        "IN",
+        "LIKE",
+        "GLOB",
+        "REGEXP",
+        "BETWEEN",
+        "IS",
+        "ISNULL",
+        "NOTNULL",
+        "EXISTS",
+        "MATCH",
+        "ESCAPE",
+        // Sorting / Grouping
+        "ORDER",
+        "BY",
+        "ASC",
+        "DESC",
+        "GROUP",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "NULLS",
+        "FIRST",
+        "LAST",
+        // Set operations
+        "UNION",
+        "INTERSECT",
+        "EXCEPT",
+        "ALL",
+        "DISTINCT",
+        // CASE expression
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        // Subqueries / CTEs
+        "WITH",
+        "RECURSIVE",
+        "AS",
+        // Constraints
+        "PRIMARY",
+        "KEY",
+        "FOREIGN",
+        "REFERENCES",
+        "UNIQUE",
+        "CHECK",
+        "DEFAULT",
+        "AUTOINCREMENT",
+        "CONSTRAINT",
+        "CONFLICT",
+        "CASCADE",
+        "RESTRICT",
+        "NO",
+        "ACTION",
+        "ABORT",
+        "FAIL",
+        "IGNORE",
+        "COLLATE",
+        "DEFERRABLE",
+        "INITIALLY",
+        "NOT",
+        "NULL",
+        // Modifiers
+        "ATTACH",
+        "DETACH",
+        "DATABASE",
+        "INDEXED",
+        "REINDEX",
+        "VACUUM",
+        "ANALYZE",
+        // Window functions
+        "OVER",
+        "PARTITION",
+        "ROWS",
+        "ROW",
+        "RANGE",
+        "GROUPS",
+        "WINDOW",
+        "UNBOUNDED",
+        "PRECEDING",
+        "FOLLOWING",
+        "CURRENT",
+        "EXCLUDE",
+        "TIES",
+        "OTHERS",
+        "FILTER",
+        // Misc
+        "DO",
+        "NOTHING",
+        "INSTEAD",
+        "EACH",
+        "BEFORE",
+        "AFTER",
+        "FOR",
+        "OF",
+        "PLAN",
+        "QUERY",
+        "RAISE",
+        "GENERATED",
+        "ALWAYS",
+        "MATERIALIZED",
+        "WITHOUT",
+        "CURRENT_DATE",
+        "CURRENT_TIME",
+        "CURRENT_TIMESTAMP",
+        // Types
+        "INTEGER",
+        "TEXT",
+        "REAL",
+        "BLOB",
+        "NUMERIC",
+        "BOOLEAN",
+        // Aggregate functions
+        "COUNT",
+        "SUM",
+        "AVG",
+        "MIN",
+        "MAX",
+        "TOTAL",
+        "GROUP_CONCAT",
+        // Scalar functions
+        "ABS",
+        "COALESCE",
+        "IFNULL",
+        "IIF",
+        "NULLIF",
+        "LENGTH",
+        "LOWER",
+        "UPPER",
+        "TRIM",
+        "LTRIM",
+        "RTRIM",
+        "SUBSTR",
+        "SUBSTRING",
+        "TYPEOF",
+        "UNICODE",
+        "HEX",
+        "INSTR",
+        "PRINTF",
+        "QUOTE",
+        "RANDOM",
+        "RANDOMBLOB",
+        "REPLACE",
+        "ROUND",
+        "SOUNDEX",
+        "ZEROBLOB",
+        "CHANGES",
+        "TOTAL_CHANGES",
+        "LIKELY",
+        "UNLIKELY",
+        "LOAD_EXTENSION",
+        "SQLITE_VERSION",
+        "SQLITE_SOURCE_ID",
+        "SQLITE_OFFSET",
+        "SQLITE_COMPILEOPTION_GET",
+        "SQLITE_COMPILEOPTION_USED",
+        // Date/time functions
+        "DATE",
+        "TIME",
+        "DATETIME",
+        "STRFTIME",
+        "JULIANDAY",
+        "UNIXEPOCH",
+        // CAST
+        "CAST",
+        "GLOB",
+    ];
+
+    fn is_keyword(word: &str) -> bool {
+        let upper = word.to_uppercase();
+        Self::KEYWORDS.contains(&upper.as_str())
+    }
+}
+
+impl Highlighter for SqlHighlighter {
+    fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        let mut styled = StyledText::new();
+
+        // Dot command highlighting
+        if line.trim_start().starts_with('.') {
+            styled.push((Style::new().bold().fg(Color::Magenta), line.to_string()));
+            return styled;
+        }
+
+        let mut chars = line.chars().peekable();
+        let mut current_word = String::new();
+        let mut in_string = false;
+        let mut string_char = '\'';
+
+        while let Some(ch) = chars.next() {
+            if in_string {
+                current_word.push(ch);
+                if ch == string_char {
+                    // Check for escaped quote
+                    if chars.peek() == Some(&string_char) {
+                        current_word.push(chars.next().unwrap());
+                    } else {
+                        styled.push((Style::new().fg(Color::Green), current_word.clone()));
+                        current_word.clear();
+                        in_string = false;
+                    }
+                }
+            } else if ch == '\'' || ch == '"' {
+                // Flush current word
+                if !current_word.is_empty() {
+                    flush_word(&mut styled, &current_word);
+                    current_word.clear();
+                }
+                in_string = true;
+                string_char = ch;
+                current_word.push(ch);
+            } else if ch == '-' && chars.peek() == Some(&'-') {
+                // Line comment
+                if !current_word.is_empty() {
+                    flush_word(&mut styled, &current_word);
+                    current_word.clear();
+                }
+                let mut comment = String::from("--");
+                for c in chars.by_ref() {
+                    comment.push(c);
+                }
+                styled.push((Style::new().fg(Color::DarkGray), comment));
+            } else if ch.is_alphanumeric() || ch == '_' {
+                current_word.push(ch);
+            } else {
+                if !current_word.is_empty() {
+                    flush_word(&mut styled, &current_word);
+                    current_word.clear();
+                }
+                // Operators and punctuation
+                let style = match ch {
+                    '(' | ')' => Style::new().fg(Color::Yellow),
+                    ';' => Style::new().bold().fg(Color::Cyan),
+                    ',' => Style::new().fg(Color::White),
+                    '*' => Style::new().fg(Color::Cyan),
+                    _ => Style::new().fg(Color::White),
+                };
+                styled.push((style, ch.to_string()));
+            }
+        }
+
+        // Flush remaining
+        if !current_word.is_empty() {
+            if in_string {
+                styled.push((Style::new().fg(Color::Green), current_word));
+            } else {
+                flush_word(&mut styled, &current_word);
+            }
+        }
+
+        styled
+    }
+}
+
+fn flush_word(styled: &mut StyledText, word: &str) {
+    if SqlHighlighter::is_keyword(word) {
+        styled.push((Style::new().bold().fg(Color::Cyan), word.to_uppercase()));
+    } else if word.parse::<f64>().is_ok() {
+        styled.push((Style::new().fg(Color::Magenta), word.to_string()));
+    } else {
+        styled.push((Style::new().fg(Color::White), word.to_string()));
+    }
+}
+-e 
+
+---FILE: ./shell/mod.rs ---
+
+pub mod highlighter;
+pub mod prompt;
+pub mod validator;
+
+use reedline::{
+    default_emacs_keybindings, ColumnarMenu, EditCommand, Emacs, FileBackedHistory, KeyCode,
+    KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+};
+
+use std::collections::HashMap;
+
+use crate::commands::{self, DotCommandResult};
+use crate::completion::SqlCompleter;
+use crate::config::Config;
+use crate::database::Database;
+use crate::explorer::Explorer;
+use crate::history::History;
+use crate::renderer::Renderer;
+
+use self::highlighter::SqlHighlighter;
+use self::prompt::SqlPrompt;
+use self::validator::SqlValidator;
+
+use std::fs;
+
+/// Run the interactive shell
+pub fn run(db: Database, mut config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    // Set up history
+    let history = if config.history {
+        History::open().ok()
+    } else {
+        None
+    };
+
+    // Set up completer with schema info and config
+    let mut completer = SqlCompleter::with_config(&config.completion);
+    refresh_completer(&db, &mut completer);
+
+    // Set up explorer with config
+    let mut explorer = Explorer::with_config(&config.explorer);
+    explorer.refresh(&db);
+
+    // Output file redirection
+    let mut output_file: Option<String> = None;
+
+    // Set the null value
+    let mut db = db;
+    db.nullvalue = config.nullvalue.clone();
+
+    // Build the prompt
+    let db_name = std::path::Path::new(&db.path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| db.path.clone());
+
+    let prompt = SqlPrompt::new(&db_name);
+
+    // Set up keybindings
+    let mut keybindings = default_emacs_keybindings();
+
+    // Tab: if menu is open → cycle next; otherwise → open menu
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::MenuNext,
+            ReedlineEvent::Menu("completion_menu".to_string()),
+        ]),
+    );
+    keybindings.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
+
+    // Ctrl+E: toggle database explorer
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('e'),
+        ReedlineEvent::ExecuteHostCommand("__explorer_toggle__".to_string()),
+    );
+
+    // ── Smart Enter: use reedline's native Enter which handles menu selection,
+    // validator-based submission, and multiline newline insertion ────
+    // Note: auto_indent is handled separately via the __auto_indent__ host command
+    // which is no longer needed since reedline's Enter handles everything natively.
+
+    // ── Auto-close brackets ─────────────────────────────────────────────
+    if config.keybindings.auto_pairs {
+        // Open brackets auto-close and move left
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('('),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("()".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('['),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("[]".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('{'),
+            ReedlineEvent::Edit(vec![
+                EditCommand::InsertString("{}".to_string()),
+                EditCommand::MoveLeft { select: false },
+            ]),
+        );
+
+        // Closing characters skip or insert
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char(')'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_paren__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char(']'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_bracket__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('}'),
+            ReedlineEvent::ExecuteHostCommand("__char_close_brace__".to_string()),
+        );
+
+        // Quotes skip or auto-close
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('\''),
+            ReedlineEvent::ExecuteHostCommand("__char_quote__".to_string()),
+        );
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char('"'),
+            ReedlineEvent::ExecuteHostCommand("__char_double_quote__".to_string()),
+        );
+    }
+
+    // ── Shift+Arrow keybindings for text selection ───────────────────────
+    if config.keybindings.shift_select {
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveLeft { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveRight { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Up,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Down,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineEnd { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::Home,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::End,
+            ReedlineEvent::Edit(vec![EditCommand::MoveToLineEnd { select: true }]),
+        );
+    }
+
+    // ── Ctrl+Arrow for word-level navigation ────────────────────────────
+    if config.keybindings.word_jump {
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordLeft { select: false }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordRight { select: false }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Left,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordLeft { select: true }]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Right,
+            ReedlineEvent::Edit(vec![EditCommand::MoveWordRight { select: true }]),
+        );
+    }
+
+    // Ctrl+A: move to beginning of line
+    keybindings.add_binding(
+        KeyModifiers::CONTROL,
+        KeyCode::Char('a'),
+        ReedlineEvent::Edit(vec![EditCommand::MoveToLineStart { select: false }]),
+    );
+
+    let edit_mode = Box::new(Emacs::new(keybindings));
+
+    // Build completion menu
+    let completion_menu = Box::new(
+        ColumnarMenu::default()
+            .with_name("completion_menu")
+            .with_columns(config.completion.menu_columns)
+            .with_column_padding(config.completion.menu_padding)
+            .with_marker(""),
+    );
+
+    // Build reedline history
+    let reedline_history = Box::new(
+        FileBackedHistory::with_file(1000, History::history_path().with_extension("txt"))
+            .expect("Failed to initialize reedline history"),
+    );
+
+    // Build reedline with validator for multi-line support
+    let mut line_editor = Reedline::create()
+        .with_history(reedline_history)
+        .with_history_exclusion_prefix(Some("__".to_string()))
+        .with_completer(Box::new(completer))
+        .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
+        .with_highlighter(Box::new(SqlHighlighter))
+        .with_validator(Box::new(SqlValidator))
+        .with_edit_mode(edit_mode)
+        .with_ansi_colors(true)
+        .with_quick_completions(true)
+        .with_partial_completions(true);
+
+    // Print welcome banner
+    print_banner(&db.path);
+
+    // Main loop
+    let mut should_exit = false;
+
+    loop {
+        if should_exit {
+            break;
+        }
+
+        match line_editor.read_line(&prompt) {
+            Ok(Signal::Success(input)) => {
+                let trimmed = input.trim();
+
+                // ── Auto-close / Skip handlers ──────────────────────────
+                if trimmed == "__char_close_paren__" {
+                    handle_skip_or_insert_char(&mut line_editor, ')');
+                    continue;
+                }
+                if trimmed == "__char_close_bracket__" {
+                    handle_skip_or_insert_char(&mut line_editor, ']');
+                    continue;
+                }
+                if trimmed == "__char_close_brace__" {
+                    handle_skip_or_insert_char(&mut line_editor, '}');
+                    continue;
+                }
+                if trimmed == "__char_quote__" {
+                    handle_quote_char(&mut line_editor, '\'');
+                    continue;
+                }
+                if trimmed == "__char_double_quote__" {
+                    handle_quote_char(&mut line_editor, '"');
+                    continue;
+                }
+
+                // ── Explorer toggle ─────────────────────────────────────
+                if trimmed == "__explorer_toggle__" {
+                    explorer.toggle();
+                    if explorer.visible {
+                        println!("{}", explorer.render());
+                    }
+                    continue;
+                }
+
+                // ── Normal flow (auto_indent disabled, validator handles multiline)
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // Save to history
+                if let Some(ref hist) = history {
+                    let _ = hist.add(trimmed);
+                }
+
+                // Dot commands
+                if trimmed.starts_with('.') {
+                    process_dot_command(
+                        trimmed,
+                        &db,
+                        &mut config,
+                        &mut output_file,
+                        &mut line_editor,
+                        &mut explorer,
+                        &mut should_exit,
+                    );
+                    continue;
+                }
+
+                // SQL execution
+                execute_sql(
+                    trimmed,
+                    &db,
+                    &config,
+                    &output_file,
+                    &mut line_editor,
+                    &mut explorer,
+                );
+            }
+            Ok(Signal::CtrlC) => {
+                continue;
+            }
+            Ok(Signal::CtrlD) => {
+                println!("Goodbye!");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Process a dot command
+fn process_dot_command(
+    cmd: &str,
+    db: &Database,
+    config: &mut Config,
+    output_file: &mut Option<String>,
+    line_editor: &mut Reedline,
+    explorer: &mut Explorer,
+    should_exit: &mut bool,
+) {
+    match commands::execute_dot_command(cmd, db, config) {
+        DotCommandResult::Output(text) => {
+            output_text(&text, output_file);
+        }
+        DotCommandResult::Handled => {}
+        DotCommandResult::Exit => {
+            println!("Goodbye!");
+            *should_exit = true;
+        }
+        DotCommandResult::Error(e) => {
+            eprintln!("\x1b[31mError: {}\x1b[0m", e);
+        }
+        DotCommandResult::ModeChanged(mode) => {
+            config.mode = mode.clone();
+            println!("Output mode changed to: {}", mode);
+        }
+        DotCommandResult::HeadersChanged(h) => {
+            config.headers = h;
+            println!("Headers {}", if h { "enabled" } else { "disabled" });
+        }
+        DotCommandResult::NullvalueChanged(nv) => {
+            config.nullvalue = nv.clone();
+            println!("Nullvalue set to: \"{}\"", nv);
+        }
+        DotCommandResult::OutputChanged(file) => {
+            match &file {
+                Some(f) => println!("Output redirected to: {}", f),
+                None => println!("Output restored to stdout"),
+            }
+            *output_file = file;
+        }
+    }
+
+    // Refresh completer after schema-modifying commands
+    if cmd.starts_with(".read") {
+        let mut new_completer = SqlCompleter::with_config(&config.completion);
+        refresh_completer(db, &mut new_completer);
+        *line_editor = std::mem::replace(line_editor, Reedline::create())
+            .with_completer(Box::new(new_completer));
+        explorer.refresh(db);
+    }
+}
+
+/// Execute a SQL statement and handle results
+fn execute_sql(
+    sql: &str,
+    db: &Database,
+    config: &Config,
+    output_file: &Option<String>,
+    line_editor: &mut Reedline,
+    explorer: &mut Explorer,
+) {
+    match db.execute_query(sql) {
+        Ok(result) => {
+            let output = Renderer::render(&result, &config.mode, config.headers, &config.nullvalue);
+            output_text(&output, output_file);
+
+            // Refresh completer after DDL statements
+            let upper = sql.to_uppercase();
+            if upper.starts_with("CREATE")
+                || upper.starts_with("DROP")
+                || upper.starts_with("ALTER")
+            {
+                let mut new_completer = SqlCompleter::with_config(&config.completion);
+                refresh_completer(db, &mut new_completer);
+                *line_editor = std::mem::replace(line_editor, Reedline::create())
+                    .with_completer(Box::new(new_completer));
+                explorer.refresh(db);
+            }
+        }
+        Err(e) => {
+            eprintln!("\x1b[31mError: {}\x1b[0m", e);
+        }
+    }
+}
+
+/// Refresh the completer with current schema
+fn refresh_completer(db: &Database, completer: &mut SqlCompleter) {
+    let tables = db.get_tables();
+    let views = db.get_views();
+    let indices = db.get_indices();
+
+    let mut all_columns = Vec::new();
+    let mut table_columns = HashMap::new();
+    for table in &tables {
+        let cols = db.get_columns(table);
+        table_columns.insert(table.clone(), cols.clone());
+        for col in cols {
+            if !all_columns.contains(&col) {
+                all_columns.push(col);
+            }
+        }
+    }
+
+    completer.update_schema(tables, views, all_columns, table_columns, indices);
+}
+
+/// Output text to stdout or file
+fn output_text(text: &str, output_file: &Option<String>) {
+    match output_file {
+        Some(path) => {
+            if let Err(e) = fs::write(path, text) {
+                eprintln!("Error writing to {}: {}", path, e);
+            }
+        }
+        None => println!("{}", text),
+    }
+}
+
+/// Print the welcome banner
+fn print_banner(db_path: &str) {
+    println!(
+        "\x1b[36m\x1b[1m{}",
+        r#"
+  ███████╗ ██████╗ ██╗     ██╗████████╗███████╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗
+  ██╔════╝██╔═══██╗██║     ██║╚══██╔══╝██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝
+  ███████╗██║   ██║██║     ██║   ██║   █████╗  █████╗  ██║   ██║██████╔╝██║  ███╗█████╗
+  ╚════██║██║▄▄ ██║██║     ██║   ██║   ██╔══╝  ██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝
+  ███████║╚██████╔╝███████╗██║   ██║   ███████╗██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗
+  ╚══════╝ ╚══▀▀═╝ ╚══════╝╚═╝   ╚═╝   ╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝"#
+    );
+    println!("\x1b[0m");
+    println!(
+        "  \x1b[37m\x1b[1mv1.0\x1b[0m  \x1b[90m─  A modern terminal-first SQLite client\x1b[0m"
+    );
+    println!("  \x1b[90mConnected to: \x1b[33m{}\x1b[0m", db_path);
+    println!(
+        "  \x1b[90mType \x1b[36m.help\x1b[90m for commands, \x1b[36mCtrl+D\x1b[90m to exit\x1b[0m"
+    );
+    println!();
+}
+
+/// Helper to either skip over a character if it already matches the cursor's target,
+/// or insert it normally.
+fn handle_skip_or_insert_char(line_editor: &mut Reedline, c: char) {
+    let buffer = line_editor.current_buffer_contents().to_string();
+    let pos = line_editor.current_insertion_point();
+    let has_char = if pos < buffer.len() {
+        buffer.as_bytes()[pos] == c as u8
+    } else {
+        false
+    };
+    if has_char {
+        line_editor.run_edit_commands(&[EditCommand::MoveRight { select: false }]);
+    } else {
+        line_editor.run_edit_commands(&[EditCommand::InsertChar(c)]);
+    }
+}
+
+/// Helper to handle quotes: skip if matched, otherwise insert pair and move left.
+fn handle_quote_char(line_editor: &mut Reedline, q: char) {
+    let buffer = line_editor.current_buffer_contents().to_string();
+    let pos = line_editor.current_insertion_point();
+    let has_char = if pos < buffer.len() {
+        buffer.as_bytes()[pos] == q as u8
+    } else {
+        false
+    };
+    if has_char {
+        line_editor.run_edit_commands(&[EditCommand::MoveRight { select: false }]);
+    } else {
+        let pair = format!("{}{}", q, q);
+        line_editor.run_edit_commands(&[
+            EditCommand::InsertString(pair),
+            EditCommand::MoveLeft { select: false },
+        ]);
+    }
+}
+-e 
+
+---FILE: ./shell/validator.rs ---
+
+use reedline::{ValidationResult, Validator};
+
+/// SQL input validator - determines if the input is complete.
+/// A SQL statement is complete when it ends with a semicolon
+/// (ignoring trailing whitespace), or is a dot command.
+/// Also handles internal host commands (__explorer_toggle__, etc.).
+pub struct SqlValidator;
+
+impl Validator for SqlValidator {
+    fn validate(&self, line: &str) -> ValidationResult {
+        let trimmed = line.trim();
+
+        // Empty input is valid (just produces nothing)
+        if trimmed.is_empty() {
+            return ValidationResult::Complete;
+        }
+
+        // Internal host commands are always complete
+        if trimmed.starts_with("__") && trimmed.ends_with("__") {
+            return ValidationResult::Complete;
+        }
+
+        // Dot commands are always complete
+        if trimmed.starts_with('.') {
+            return ValidationResult::Complete;
+        }
+
+        // SQL statements must end with semicolon
+        if trimmed.ends_with(';') {
+            ValidationResult::Complete
+        } else {
+            ValidationResult::Incomplete
+        }
+    }
+}
+
+/// Calculate the proper indentation for a new line based on the buffer content.
+/// Returns the number of spaces to indent.
+pub fn calculate_indent(buffer: &str) -> usize {
+    let indent_width: usize = 4;
+    let mut depth: i32 = 0;
+
+    // Count unmatched open parens in the entire buffer
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut prev_char = '\0';
+
+    for ch in buffer.chars() {
+        match ch {
+            '\'' if !in_double_quote && prev_char != '\'' => {
+                in_single_quote = !in_single_quote;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            '(' if !in_single_quote && !in_double_quote => {
+                depth += 1;
+            }
+            ')' if !in_single_quote && !in_double_quote => {
+                depth -= 1;
+                if depth < 0 {
+                    depth = 0;
+                }
+            }
+            _ => {}
+        }
+        prev_char = ch;
+    }
+
+    (depth as usize) * indent_width
+}
+-e 
+
+---FILE: ./main.rs ---
+
+mod app;
+mod commands;
+mod completion;
+mod config;
+mod database;
+mod explorer;
+mod history;
+mod renderer;
+mod shell;
+
+use clap::Parser;
+
+/// SQLiteForge - A modern terminal-first SQLite client
+#[derive(Parser, Debug)]
+#[command(
+    name = "sqliteforge",
+    version = "1.0.1",
+    about = "A modern terminal-first SQLite client",
+    long_about = "SQLiteForge is a modern, feature-rich terminal client for SQLite databases.\nIt provides syntax highlighting, autocompletion, persistent history, and multiple output formats."
+)]
+struct Cli {
+    /// Path to the SQLite database file (creates if not exists)
+    #[arg(value_name = "DATABASE")]
+    database: Option<String>,
+
+    /// Execute SQL command and exit
+    #[arg(short = 'c', long = "command")]
+    command: Option<String>,
+
+    /// Read and execute SQL from file
+    #[arg(short = 'f', long = "file")]
+    file: Option<String>,
+
+    /// Output mode (box, table, column, markdown, csv, json, list)
+    #[arg(short = 'm', long = "mode")]
+    mode: Option<String>,
+
+    /// Show version information
+    #[arg(long = "version-info")]
+    version_info: bool,
+}
+
+fn main() {
+    let cli = Cli::parse();
+
+    if cli.version_info {
+        println!("SQLiteForge v1.0.1");
+        println!("Built with Rust + rusqlite");
+        println!("Terminal: crossterm");
+        println!("Editor: reedline");
+        return;
+    }
+
+    // Create the application
+    let app = match app::App::new(cli.database.as_deref()) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("\x1b[31mError: {}\x1b[0m", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Apply CLI overrides to config
+    let mut config = app.config.clone();
+    if let Some(mode) = &cli.mode {
+        config.mode = mode.clone();
+    }
+
+    // Non-interactive mode: execute command
+    if let Some(cmd) = &cli.command {
+        execute_noninteractive(&app.db, &config, cmd);
+        return;
+    }
+
+    // Non-interactive mode: execute file
+    if let Some(file) = &cli.file {
+        match std::fs::read_to_string(file) {
+            Ok(content) => {
+                execute_noninteractive(&app.db, &config, &content);
+            }
+            Err(e) => {
+                eprintln!("\x1b[31mError reading file '{}': {}\x1b[0m", file, e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Interactive mode
+    let app = app::App { config, db: app.db };
+    if let Err(e) = app.run() {
+        eprintln!("\x1b[31mError: {}\x1b[0m", e);
+        std::process::exit(1);
+    }
+}
+
+fn execute_noninteractive(db: &database::Database, config: &config::Config, sql: &str) {
+    // Split by semicolons for multiple statements
+    for statement in sql.split(';') {
+        let trimmed = statement.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let full_stmt = format!("{};", trimmed);
+
+        if trimmed.starts_with('.') {
+            match commands::execute_dot_command(trimmed, db, config) {
+                commands::DotCommandResult::Output(text) => println!("{}", text),
+                commands::DotCommandResult::Error(e) => eprintln!("Error: {}", e),
+                commands::DotCommandResult::Exit => return,
+                _ => {}
+            }
+        } else {
+            match db.execute_query(&full_stmt) {
+                Ok(result) => {
+                    let output = renderer::Renderer::render(
+                        &result,
+                        &config.mode,
+                        config.headers,
+                        &config.nullvalue,
+                    );
+                    println!("{}", output);
+                }
+                Err(e) => {
+                    eprintln!("\x1b[31mError: {}\x1b[0m", e);
+                }
+            }
+        }
+    }
+}
+-e 
+
+---FILE: ./config/mod.rs ---
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+
+/// Application configuration loaded from ~/.config/sqliteforge/config.toml
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+
+    #[serde(default = "default_mode")]
+    pub mode: String,
+
+    #[serde(default = "default_true")]
+    pub headers: bool,
+
+    #[serde(default = "default_true")]
+    pub history: bool,
+
+    #[serde(default = "default_nullvalue")]
+    pub nullvalue: String,
+
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
+
+    #[serde(default)]
+    pub completion: CompletionConfig,
+
+    #[serde(default)]
+    pub explorer: ExplorerConfig,
+}
+
+/// Keybinding configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeybindingsConfig {
+    /// Key to toggle the database explorer (default: "ctrl+e")
+    #[serde(default = "default_explorer_toggle")]
+    pub explorer_toggle: String,
+
+    /// Key to execute query / submit (default: "enter")
+    #[serde(default = "default_submit")]
+    pub submit: String,
+
+    /// Enable Shift+Arrow for text selection (default: true)
+    #[serde(default = "default_true")]
+    pub shift_select: bool,
+
+    /// Enable Ctrl+Arrow for word-jump navigation (default: true)
+    #[serde(default = "default_true")]
+    pub word_jump: bool,
+
+    /// Key to clear screen (default: "ctrl+l")
+    #[serde(default = "default_clear_screen")]
+    pub clear_screen: String,
+
+    /// Auto-close brackets and quotes: ( → (), ' → '' (default: true)
+    #[serde(default = "default_true")]
+    pub auto_pairs: bool,
+
+    /// Auto-indent continuation lines inside parentheses (default: true)
+    #[serde(default = "default_true")]
+    pub auto_indent: bool,
+}
+
+/// Autocompletion configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionConfig {
+    /// Enable autocompletion (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Show completions eagerly after keywords like SELECT, FROM, etc. (default: true)
+    #[serde(default = "default_true")]
+    pub eager_hint: bool,
+
+    /// Number of columns in the completion menu (default: 4)
+    #[serde(default = "default_menu_columns")]
+    pub menu_columns: u16,
+
+    /// Column padding in completion menu (default: 2)
+    #[serde(default = "default_menu_padding")]
+    pub menu_padding: usize,
+
+    /// Quote identifiers in completions (default: true)
+    #[serde(default = "default_true")]
+    pub quote_identifiers: bool,
+
+    /// Include column suggestions in general context (default: true)
+    #[serde(default = "default_true")]
+    pub suggest_columns: bool,
+
+    /// Include keyword suggestions (default: true)
+    #[serde(default = "default_true")]
+    pub suggest_keywords: bool,
+
+    /// Maximum number of suggestions shown (default: 50)
+    #[serde(default = "default_max_suggestions")]
+    pub max_suggestions: usize,
+}
+
+/// Database explorer panel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplorerConfig {
+    /// Show column names under each table (default: true)
+    #[serde(default = "default_true")]
+    pub show_columns: bool,
+
+    /// Show row counts next to table names (default: false)
+    #[serde(default)]
+    pub show_row_counts: bool,
+
+    /// Show column types alongside column names (default: true)
+    #[serde(default = "default_true")]
+    pub show_column_types: bool,
+
+    /// Panel width in characters (default: 40)
+    #[serde(default = "default_panel_width")]
+    pub panel_width: usize,
+}
+
+// ── Default value functions ─────────────────────────────────────────────────
+
+fn default_theme() -> String {
+    "catppuccin".to_string()
+}
+
+fn default_mode() -> String {
+    "box".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_nullvalue() -> String {
+    String::new()
+}
+
+fn default_explorer_toggle() -> String {
+    "ctrl+e".to_string()
+}
+
+fn default_submit() -> String {
+    "enter".to_string()
+}
+
+fn default_clear_screen() -> String {
+    "ctrl+l".to_string()
+}
+
+fn default_menu_columns() -> u16 {
+    4
+}
+
+fn default_menu_padding() -> usize {
+    2
+}
+
+fn default_max_suggestions() -> usize {
+    50
+}
+
+fn default_panel_width() -> usize {
+    40
+}
+
+// ── Trait implementations ───────────────────────────────────────────────────
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self {
+            explorer_toggle: default_explorer_toggle(),
+            submit: default_submit(),
+            shift_select: default_true(),
+            word_jump: default_true(),
+            clear_screen: default_clear_screen(),
+            auto_pairs: default_true(),
+            auto_indent: default_true(),
+        }
+    }
+}
+
+impl Default for CompletionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            eager_hint: default_true(),
+            menu_columns: default_menu_columns(),
+            menu_padding: default_menu_padding(),
+            quote_identifiers: default_true(),
+            suggest_columns: default_true(),
+            suggest_keywords: default_true(),
+            max_suggestions: default_max_suggestions(),
+        }
+    }
+}
+
+impl Default for ExplorerConfig {
+    fn default() -> Self {
+        Self {
+            show_columns: default_true(),
+            show_row_counts: false,
+            show_column_types: default_true(),
+            panel_width: default_panel_width(),
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+            mode: default_mode(),
+            headers: default_true(),
+            history: default_true(),
+            nullvalue: default_nullvalue(),
+            keybindings: KeybindingsConfig::default(),
+            completion: CompletionConfig::default(),
+            explorer: ExplorerConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    /// Returns the path to the configuration file
+    pub fn config_path() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("sqliteforge")
+            .join("config.toml")
+    }
+
+    /// Load configuration from file, falling back to defaults
+    pub fn load() -> Self {
+        let path = Self::config_path();
+        if path.exists() {
+            match fs::read_to_string(&path) {
+                Ok(content) => match toml::from_str(&content) {
+                    Ok(config) => return config,
+                    Err(e) => {
+                        eprintln!("Warning: Failed to parse config: {}", e);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Warning: Failed to read config: {}", e);
+                }
+            }
+        }
+        let config = Self::default();
+        // Auto-create default config if it doesn't exist
+        let _ = config.save();
+        config
+    }
+
+    /// Save configuration to file
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        fs::write(&path, content)?;
+        Ok(())
+    }
+}
+-e 
+
+---FILE: ./commands/mod.rs ---
+
+use crate::config::Config;
+use crate::database::Database;
+use std::fs;
+
+/// Result of executing a dot command
+pub enum DotCommandResult {
+    /// Output to display
+    Output(String),
+    /// Command was handled, no output needed
+    Handled,
+    /// Exit the shell
+    Exit,
+    /// Error message
+    Error(String),
+    /// Mode changed
+    ModeChanged(String),
+    /// Headers setting changed
+    HeadersChanged(bool),
+    /// Nullvalue changed
+    NullvalueChanged(String),
+    /// Output file changed
+    OutputChanged(Option<String>),
+}
+
+/// Process dot commands
+pub fn execute_dot_command(input: &str, db: &Database, config: &Config) -> DotCommandResult {
+    let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
+    let command = parts[0].to_lowercase();
+    let args = if parts.len() > 1 { parts[1].trim() } else { "" };
+
+    match command.as_str() {
+        ".help" => DotCommandResult::Output(help_text()),
+        ".quit" | ".exit" => DotCommandResult::Exit,
+        ".tables" => {
+            let tables = db.get_tables();
+            if tables.is_empty() {
+                DotCommandResult::Output("No tables found.".to_string())
+            } else {
+                DotCommandResult::Output(tables.join("\n"))
+            }
+        }
+        ".schema" => {
+            if args.is_empty() {
+                let schemas = db.get_all_schemas();
+                if schemas.is_empty() {
+                    DotCommandResult::Output("No Schema Found".to_string())
+                } else {
+                    DotCommandResult::Output(schemas.join(";\n\n") + ";")
+                }
+            } else {
+                let name = args.trim_matches('"').trim_matches('\'');
+                match db.get_schema(name) {
+                    Some(schema) => DotCommandResult::Output(schema + ";"),
+                    None => DotCommandResult::Error(format!("No such object: {}", name)),
+                }
+            }
+        }
+        ".indices" => {
+            let indices = db.get_indices();
+            if indices.is_empty() {
+                DotCommandResult::Output("No indices found.".to_string())
+            } else {
+                DotCommandResult::Output(indices.join("\n"))
+            }
+        }
+        ".mode" => {
+            if args.is_empty() {
+                DotCommandResult::Output(format!("Current mode: {}", config.mode))
+            } else {
+                let mode = args.to_lowercase();
+                match mode.as_str() {
+                    "box" | "table" | "column" | "markdown" | "csv" | "json" | "list" => {
+                        DotCommandResult::ModeChanged(mode)
+                    }
+                    _ => DotCommandResult::Error(format!(
+                        "Unknown mode: {}. Available: box, table, column, markdown, csv, json, list",
+                        mode
+                    )),
+                }
+            }
+        }
+        ".headers" => {
+            if args.is_empty() {
+                DotCommandResult::Output(format!(
+                    "Headers: {}",
+                    if config.headers { "on" } else { "off" }
+                ))
+            } else {
+                match args.to_lowercase().as_str() {
+                    "on" | "yes" | "true" | "1" => DotCommandResult::HeadersChanged(true),
+                    "off" | "no" | "false" | "0" => DotCommandResult::HeadersChanged(false),
+                    _ => DotCommandResult::Error("Usage: .headers on|off".to_string()),
+                }
+            }
+        }
+        ".read" => {
+            if args.is_empty() {
+                DotCommandResult::Error("Usage: .read FILENAME".to_string())
+            } else {
+                match fs::read_to_string(args) {
+                    Ok(content) => match db.execute_script(&content) {
+                        Ok(_) => DotCommandResult::Output(format!("Executed script: {}", args)),
+                        Err(e) => DotCommandResult::Error(format!("Script error: {}", e)),
+                    },
+                    Err(e) => DotCommandResult::Error(format!("Cannot read file: {}", e)),
+                }
+            }
+        }
+        ".output" => {
+            if args.is_empty() || args == "stdout" {
+                DotCommandResult::OutputChanged(None)
+            } else {
+                DotCommandResult::OutputChanged(Some(args.to_string()))
+            }
+        }
+        ".dump" => match db.dump() {
+            Ok(dump) => DotCommandResult::Output(dump),
+            Err(e) => DotCommandResult::Error(format!("Dump error: {}", e)),
+        },
+        ".nullvalue" => {
+            if args.is_empty() {
+                DotCommandResult::Output(format!("Nullvalue: \"{}\"", config.nullvalue))
+            } else {
+                DotCommandResult::NullvalueChanged(args.to_string())
+            }
+        }
+        ".show" => {
+            let mut out = String::new();
+            out.push_str(&format!("    database: {}\n", db.path));
+            out.push_str(&format!("        mode: {}\n", config.mode));
+            out.push_str(&format!(
+                "     headers: {}\n",
+                if config.headers { "on" } else { "off" }
+            ));
+            out.push_str(&format!("   nullvalue: \"{}\"\n", config.nullvalue));
+            out.push_str(&format!(
+                "     history: {}\n",
+                if config.history { "on" } else { "off" }
+            ));
+            out.push_str(&format!("       theme: {}\n", config.theme));
+            DotCommandResult::Output(out)
+        }
+        ".preview" => {
+            if args.is_empty() {
+                DotCommandResult::Error("Usage: .preview TABLE_NAME".to_string())
+            } else {
+                let name = args.trim_matches('"').trim_matches('\'');
+                let sql = format!("SELECT * FROM \"{}\" LIMIT 20", name.replace('"', "\"\""));
+                match db.execute_query(&sql) {
+                    Ok(result) => {
+                        let output = crate::renderer::Renderer::render(
+                            &result,
+                            &config.mode,
+                            config.headers,
+                            &config.nullvalue,
+                        );
+                        DotCommandResult::Output(output)
+                    }
+                    Err(e) => DotCommandResult::Error(format!("Preview error: {}", e)),
+                }
+            }
+        }
+        _ => DotCommandResult::Error(format!(
+            "Unknown command: {}. Use .help for a list.",
+            command
+        )),
+    }
+}
+
+fn help_text() -> String {
+    let config_path = crate::config::Config::config_path();
+    format!(
+        r#"SQLiteForge v1.0 - Available Commands:
+
+  .help                   Show this help message
+  .quit / .exit           Exit SQLiteForge
+  .tables                 List all tables
+  .schema [TABLE]         Show CREATE statements
+  .indices                List all indices
+  .mode [MODE]            Set output mode (box|table|column|markdown|csv|json|list)
+  .headers [on|off]       Toggle column headers
+  .read FILENAME          Execute a SQL script file
+  .output [FILENAME]      Redirect output to file (no args = stdout)
+  .dump                   Dump entire database as SQL
+  .nullvalue [STRING]     Set string to display for NULL values
+  .show                   Show current settings
+  .preview TABLE          Preview first 20 rows of a table
+
+  Keyboard Shortcuts:
+    Tab                 Autocomplete
+    Shift+Tab           Previous suggestion
+    Up/Down Arrow       Navigate history
+    Shift+Left/Right    Select text
+    Shift+Up/Down       Select to line start/end
+    Ctrl+Left/Right     Jump by word
+    Ctrl+Shift+L/R      Select by word
+    Ctrl+R              Reverse search history
+    Ctrl+E              Toggle database explorer
+    Ctrl+A              Move to line start
+    Ctrl+L              Clear screen
+    Ctrl+C              Cancel input
+    Ctrl+D              Exit
+
+  Config: {}"#,
+        config_path.display()
+    )
+}
+-e 
+
+---FILE: ./history/mod.rs ---
+
+use rusqlite::Connection;
+use std::path::PathBuf;
+
+/// Persistent query history backed by SQLite
+pub struct History {
+    conn: Connection,
+}
+
+impl History {
+    /// Open or create the history database
+    pub fn open() -> Result<Self, String> {
+        let path = Self::history_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp DESC);",
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(Self { conn })
+    }
+
+    /// Returns the path to the history database
+    pub fn history_path() -> PathBuf {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+            .join("sqliteforge")
+            .join("history.db")
+    }
+
+    /// Add a query to history
+    pub fn add(&self, query: &str) -> Result<(), String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        self.conn
+            .execute("INSERT INTO history (query) VALUES (?1)", [trimmed])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Search history with a pattern (fuzzy)
+    pub fn search(&self, pattern: &str) -> Vec<String> {
+        let like_pattern = format!("%{}%", pattern);
+        self.conn
+            .prepare(
+                "SELECT DISTINCT query FROM history WHERE query LIKE ?1 ORDER BY id DESC LIMIT 50",
+            )
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([&like_pattern], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get recent history entries
+    pub fn recent(&self, limit: usize) -> Vec<String> {
+        self.conn
+            .prepare("SELECT query FROM history ORDER BY id DESC LIMIT ?1")
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([limit as i64], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all history for reedline integration
+    pub fn all_entries(&self) -> Vec<String> {
+        self.conn
+            .prepare("SELECT query FROM history ORDER BY id ASC")
+            .ok()
+            .map(|mut stmt| {
+                stmt.query_map([], |row| row.get(0))
+                    .ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+}

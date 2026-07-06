@@ -19,6 +19,7 @@ entries of each and their real approximate sizes rather than every string,
 since there's nothing to explain in a keyword list beyond "these are SQL
 keywords":
 
+**File:** `src/completion/mod.rs`
 ```diff
 +/// Keywords valid in expressions (after SELECT, WHERE, ON, HAVING, etc.)
 +const EXPR_KEYWORDS: &[&str] = &[
@@ -97,6 +98,7 @@ of `STMT_KEYWORDS`, `CLAUSE_KEYWORDS`, and `EXPR_KEYWORDS` — because at the
 start of a line, a `SELECT`, an `AND` (inside a larger script pasted in),
 and a bare column name are all still grammatically possible.
 
+**File:** `src/completion/mod.rs`
 ```diff
  impl SqlCompleter {
      ...
@@ -291,6 +293,7 @@ question about the *previous token* — it's a question about how many
 parentheses have opened and closed since the last `CREATE TABLE` appeared
 anywhere earlier on the line:
 
+**File:** `src/completion/mod.rs`
 ```diff
  impl SqlCompleter {
 +    /// Check if we are inside CREATE TABLE parentheses
@@ -334,6 +337,7 @@ a quoted identifier (`"users".`) — the quoting matters because a table name
 with spaces or reserved words in it has to be quoted in the SQL itself, and
 the cursor could legitimately be sitting right after that closing quote:
 
+**File:** `src/completion/mod.rs`
 ```diff
  impl SqlCompleter {
 +    /// Try to detect a "table"."col" pattern and return table-qualified column suggestions.
@@ -422,6 +426,7 @@ turn it off. `CompletionConfig` gives a user a TOML section for all of it —
 more knobs than we need to explain individually, since each one is a single
 `if` or ternary at its use site:
 
+**File:** `src/config/mod.rs`
 ```diff
 +/// Autocompletion configuration
 +#[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,6 +452,7 @@ more knobs than we need to explain individually, since each one is a single
 +//    default_max_suggestions() -> 50, and a Default impl assembling them all
 ```
 
+**File:** `src/completion/mod.rs`
 ```diff
 +use crate::config::CompletionConfig;
  pub struct SqlCompleter {
@@ -524,6 +530,7 @@ it builds a completer, including the DDL-triggered rebuild from Step 10.2,
 and passes `config.completion.menu_columns` / `menu_padding` into the
 `ColumnarMenu` builder:
 
+**File:** `src/shell/mod.rs`
 ```diff
 -    let completion_menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
 +    let completion_menu = Box::new(
@@ -538,6 +545,7 @@ and passes `config.completion.menu_columns` / `menu_padding` into the
 And the reedline builder chain picks up a few more options now that the
 completer is config-aware:
 
+**File:** `src/shell/mod.rs`
 ```diff
      let mut line_editor = Reedline::create()
          .with_history(reedline_history)

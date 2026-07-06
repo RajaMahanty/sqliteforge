@@ -9,6 +9,7 @@ exactly this: given the buffer, return `Complete` (submit) or `Incomplete`
 
 ## Step 6.1 — Complete means "ends with a semicolon"
 
+**File:** `src/shell/validator.rs`
 ```diff
 +use reedline::{ValidationResult, Validator};
 +
@@ -55,6 +56,7 @@ in now, matching the real file exactly, rather than adding it retroactively
 when Chapter 12 needs it; it's harmless today because no real SQL statement
 or dot command happens to start and end with double underscores.
 
+**File:** `src/shell/mod.rs`
 ```diff
  pub mod prompt;
 +pub mod validator;
@@ -95,6 +97,7 @@ real.
 One more piece belongs in this file, and it's worth building even though
 (spoiler) nothing ever calls it:
 
+**File:** `src/shell/validator.rs`
 ```diff
 +/// Calculate the proper indentation for a new line based on the buffer content.
 +/// Returns the number of spaces to indent.

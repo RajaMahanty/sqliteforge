@@ -13,6 +13,7 @@ reads.
 
 ## Step 12.1 — `KeybindingsConfig`
 
+**File:** `src/config/mod.rs`
 ```diff
 +/// Keybinding configuration
 +#[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +65,7 @@ for one keystroke. The real code does this for three bracket pairs and two
 quote characters — we're building all five, since they're all the same
 pattern repeated:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +use reedline::{..., EditCommand, ...};
  ...
@@ -102,6 +104,7 @@ pattern repeated:
 +    }
 ```
 
+**File:** `src/shell/mod.rs`
 ```diff
              Ok(Signal::Success(input)) => {
                  let trimmed = input.trim();
@@ -193,6 +196,7 @@ These don't need any host-command trickery — pure, static keybindings,
 because "select while moving" and "jump by word" are both things
 `reedline`'s own `EditCommand` enum already knows how to do:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +    // Shift+Arrow keybindings for text selection
 +    if config.keybindings.shift_select {

@@ -9,6 +9,7 @@ command-line tool, before we've written any interactive code at all.
 
 ## Step 3.1 — One mode: `box`
 
+**File:** `src/renderer/mod.rs`
 ```diff
 +use crate::database::QueryResult;
 +use unicode_width::UnicodeWidthStr;
@@ -109,6 +110,7 @@ real code is.
 
 Wired into `main.rs` in place of the debug print:
 
+**File:** `src/main.rs`
 ```diff
 +mod renderer;
 +use renderer::Renderer;
@@ -152,6 +154,7 @@ produces a GitHub-flavored table; `csv` and `list` are single-pass,
 delimiter-joined output with no width computation at all; `json` tries to
 distinguish numbers from strings by attempting to parse each value.
 
+**File:** `src/renderer/mod.rs`
 ```diff
      pub fn render(result: &QueryResult, mode: &str, headers: bool, nullvalue: &str) -> String {
          ...
@@ -233,6 +236,7 @@ This is the fix for the multi-statement bug from the end of the last
 chapter: split on `;` *before* calling `execute_query`, so each call only
 ever sees one statement.
 
+**File:** `src/main.rs`
 ```diff
  struct Cli {
      database: Option<String>,

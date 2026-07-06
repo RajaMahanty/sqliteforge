@@ -9,6 +9,7 @@ confirm with a real `cargo build`, doesn't actually get used by anything yet.
 
 ## Step 8.1 — A SQLite-backed query log
 
+**File:** `src/history/mod.rs`
 ```diff
 +use rusqlite::Connection;
 +use std::path::PathBuf;
@@ -93,6 +94,7 @@ different ways to read the same table back (by pattern, most-recent-N, or
 in full), all built at once, none of them called from anywhere yet. We'll
 confirm exactly that with `cargo build` in a moment.
 
+**File:** `src/history/mod.rs`
 ```diff
 +mod history;
 ```
@@ -107,6 +109,7 @@ are features of `Reedline` itself, driven by whatever implements its own
 backed by a plain text file, and it needs to be handed to the line editor
 directly:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +use reedline::{FileBackedHistory, Reedline, Signal};
 +use crate::history::History;

@@ -18,6 +18,7 @@ statement the cursor is, and to `table.column`-qualified names.
 
 ## Step 10.1 — Dot-command completion and the Tab keybinding
 
+**File:** `src/completion/mod.rs`
 ```diff
 +use reedline::{Completer, Span, Suggestion};
 +use std::collections::HashMap;
@@ -66,6 +67,7 @@ Wiring a `Completer` into reedline needs three pieces working together: the
 completer itself, a menu widget to display suggestions, and a keybinding to
 open it — none of which reedline gives you for free out of the box.
 
+**File:** `src/shell/mod.rs`
 ```diff
 +use reedline::{
 +    default_emacs_keybindings, ColumnarMenu, Emacs, FileBackedHistory, KeyCode,
@@ -118,6 +120,7 @@ changes — and, looking ahead to next chapter's qualified `table.column`
 completion, it needs columns indexed *per table*, not just as one flat
 list:
 
+**File:** `src/completion/mod.rs`
 ```diff
  pub struct SqlCompleter {
      dot_commands: Vec<String>,
@@ -187,6 +190,7 @@ as `get_tables` back in Chapter 7. And `shell::run` needs a function to pull
 that schema out and hand it to the completer, both at startup and again
 whenever the schema changes:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +    let mut completer = SqlCompleter::new();
 +    refresh_completer(&db, &mut completer);

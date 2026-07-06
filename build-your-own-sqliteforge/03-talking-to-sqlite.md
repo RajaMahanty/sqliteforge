@@ -9,12 +9,14 @@ back — before we've written a single line of rendering or shell code.
 
 ## Step 2.1 — Open a connection, print its path
 
+**File:** `Cargo.toml`
 ```diff
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 +rusqlite = { version = "0.31", features = ["bundled"] }
 ```
 
+**File:** `src/database/mod.rs`
 ```diff
 +use rusqlite::{Connection, Result as SqliteResult};
 +use std::path::Path;
@@ -43,6 +45,7 @@ clap = { version = "4", features = ["derive"] }
 +}
 ```
 
+**File:** `src/main.rs`
 ```diff
 +mod database;
 +
@@ -84,6 +87,7 @@ results need to represent two very different shapes: rows-and-columns (from
 `UPDATE`, `CREATE`, ...). One struct, `QueryResult`, covers both — with a
 `Vec<Vec<String>>` for rows and empty vectors when there aren't any.
 
+**File:** `src/database/mod.rs`
 ```diff
 -use rusqlite::{Connection, Result as SqliteResult};
 +use rusqlite::{types::Value, Connection, Result as SqliteResult};
@@ -173,6 +177,7 @@ results need to represent two very different shapes: rows-and-columns (from
 +}
 ```
 
+**File:** `src/main.rs`
 ```diff
  struct Cli {
      database: Option<String>,

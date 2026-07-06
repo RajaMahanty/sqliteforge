@@ -16,6 +16,7 @@ along, just run `cargo run` in your own terminal.
 
 ## Step 5.1 — A prompt and a read loop
 
+**File:** `src/shell/prompt.rs`
 ```diff
 +use reedline::Prompt;
 +use std::borrow::Cow;
@@ -51,6 +52,7 @@ along, just run `cargo run` in your own terminal.
 +}
 ```
 
+**File:** `src/shell/mod.rs`
 ```diff
 +pub mod prompt;
 +use reedline::{Reedline, Signal};
@@ -93,6 +95,7 @@ along, just run `cargo run` in your own terminal.
 `App` gets a `run` method, and `main` finally grows the branch that's been
 missing since Chapter 4:
 
+**File:** `src/app/mod.rs`
 ```diff
  impl App {
      pub fn new(...) -> ... { ... }
@@ -104,6 +107,7 @@ missing since Chapter 4:
  }
 ```
 
+**File:** `src/main.rs`
 ```diff
 +mod shell;
  ...

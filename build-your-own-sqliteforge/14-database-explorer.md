@@ -13,6 +13,7 @@ that, because that's what's really there.
 
 ## Step 13.1 — `Explorer`: pull the schema, draw a tree
 
+**File:** `src/explorer/mod.rs`
 ```diff
 +use crate::config::ExplorerConfig;
 +use crate::database::Database;
@@ -146,6 +147,7 @@ shape as `CompletionConfig` — `show_columns`, `show_row_counts`,
 
 ## Step 13.2 — Ctrl+E
 
+**File:** `src/shell/mod.rs`
 ```diff
 +use crate::explorer::Explorer;
  ...
@@ -171,6 +173,7 @@ And, matching the pattern already established for the completer, the
 explorer needs refreshing wherever the completer does — right after any
 `CREATE`/`DROP`/`ALTER`:
 
+**File:** `src/shell/mod.rs`
 ```diff
                              line_editor = std::mem::replace(&mut line_editor, Reedline::create())
                                  .with_completer(Box::new(new_completer));

@@ -11,6 +11,7 @@ path or the interactive one.
 
 ## Step 4.1 — A `Config` with five fields
 
+**File:** `src/config/mod.rs`
 ```diff
 +use serde::{Deserialize, Serialize};
 +use std::fs;
@@ -78,6 +79,7 @@ path or the interactive one.
 +}
 ```
 
+**File:** `Cargo.toml`
 ```diff
 +serde = { version = "1", features = ["derive"] }
 +toml = "0.8"
@@ -120,6 +122,7 @@ list in the [Appendix](appendix.md)).
 
 ## Step 4.2 — `App`: config and database, in one place
 
+**File:** `src/app/mod.rs`
 ```diff
 +pub use crate::config::Config;
 +pub use crate::database::Database;
@@ -144,6 +147,7 @@ list in the [Appendix](appendix.md)).
 +}
 ```
 
+**File:** `src/main.rs`
 ```diff
 +mod app;
 +mod config;

@@ -11,6 +11,7 @@ distinction matters for what it gets right and wrong.
 
 ## Step 9.1 — The state machine
 
+**File:** `src/shell/highlighter.rs`
 ```diff
 +use nu_ansi_term::{Color, Style};
 +use reedline::{Highlighter, StyledText};
@@ -98,6 +99,7 @@ distinction matters for what it gets right and wrong.
 +}
 ```
 
+**File:** `src/shell/mod.rs`
 ```diff
 +pub mod highlighter;
 +use self::highlighter::SqlHighlighter;

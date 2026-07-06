@@ -24,7 +24,7 @@ path = "src/main.rs"
 +clap = { version = "4", features = ["derive"] }
 ```
 
-**File:** `src/main.rs`
+**File:** `Cargo.toml`
 ```diff
 +use clap::Parser;
 +

@@ -10,6 +10,7 @@ in Chapter 3, before dot commands existed) with everything since.
 
 ## Step 14.1 — `.read`, `.output`, `.dump`, `.nullvalue`, `.preview`
 
+**File:** `src/commands/mod.rs`
 ```diff
      pub enum DotCommandResult {
          Output(String), Exit, Error(String), ModeChanged(String), HeadersChanged(bool),
@@ -73,6 +74,7 @@ new `Database` methods, in the same style as `get_tables` and friends.
 instead of stdout. That means every `println!` for query results and dot
 command output needs to become conditional:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +    // When set via `.output FILE`, query results go to a file instead of stdout
 +    let mut output_file: Option<String> = None;
@@ -137,6 +139,7 @@ COMMIT;
 Every banner we've shown so far in this tutorial has been a placeholder
 three-liner. The real one is bigger:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +    print_banner(&db.path);
      loop {
@@ -172,6 +175,7 @@ exactly the kind of thing that quietly turns "we rebuilt this program" into
 "we rebuilt an approximation of this program," and by this chapter we mean
 the former literally.
 
+**File:** `src/main.rs`
 ```diff
  /// SQLiteForge - A modern terminal-first SQLite client
  #[derive(Parser, Debug)]
@@ -221,6 +225,7 @@ capturing them as closures. That extraction forces one more change:
 so exiting on `.quit` becomes a `*should_exit = true` write-through a `&mut
 bool`, checked at the top of the loop on every iteration instead:
 
+**File:** `src/shell/mod.rs`
 ```diff
 +    let mut should_exit = false;
      loop {
@@ -311,6 +316,7 @@ but still missing dot-command support, finally catches up. This is the
 last piece needed for `sqliteforge db.sqlite -f setup.sql` to use `.read`
 or `.mode` the same way an interactive session can:
 
+**File:** `src/main.rs`
 ```diff
  fn execute_noninteractive(db: &Database, config: &Config, sql: &str) {
      for statement in sql.split(';') {

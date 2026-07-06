@@ -13,6 +13,7 @@ on, rather than a module that prints directly.
 Dot commands need to read schema metadata SQLite itself tracks in
 `sqlite_master`, so `Database` grows a handful of read-only queries first:
 
+**File:** `src/database/mod.rs`
 ```diff
      /// Execute a SQL script file (may contain multiple statements)
 +    pub fn get_tables(&self) -> Vec<String> {
@@ -45,6 +46,7 @@ loss of information in exchange for call sites that don't need `?` or
 
 Then the `commands` module itself:
 
+**File:** `src/commands/mod.rs`
 ```diff
 +use crate::config::Config;
 +use crate::database::Database;
@@ -161,6 +163,7 @@ state involved at all — the actual side effects all happen one layer up.
 
 ## Step 7.2 — Wiring it into the loop
 
+**File:** `src/shell/mod.rs`
 ```diff
 +use crate::commands::{self, DotCommandResult};
  ...
